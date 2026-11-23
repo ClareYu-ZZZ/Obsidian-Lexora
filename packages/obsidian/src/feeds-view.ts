@@ -547,7 +547,7 @@ class AddFeedModal extends Modal {
     head.createSpan({ text: '从本地获取' });
     new Setting(contentEl)
       .setName('本地媒体文件')
-      .setDesc('选 vault 里的音视频，转写或配字幕后生成教程')
+      .setDesc('从电脑或手机选音视频文件（任意位置），转写或配字幕后生成教程')
       .addButton((b) => b.setButtonText('选择').onClick(() => {
         this.close();
         pickLocalMedia(this.plugin);

@@ -1,25 +1,59 @@
-import { App, FuzzySuggestModal, Modal, Notice, Setting, TFile } from 'obsidian';
+import { Modal, Notice, Setting, TFile } from 'obsidian';
 import type ElpPlugin from './main';
 import { generateFromMedia } from './generate';
 import { SubtitlePickModal } from './subtitle-modal';
 
 const MEDIA_EXT = new Set(['mp4', 'webm', 'mov', 'm4v', 'mkv', 'mp3', 'm4a', 'wav', 'ogg', 'flac']);
 
-/** 命令入口：从本地媒体生成教程（有字幕用字幕，无字幕走服务转写）。 */
+const MEDIA_ACCEPT = [...MEDIA_EXT].map((e) => `.${e}`).join(',');
+
+/** 命令入口：系统文件选择器挑任意位置的音视频 → 导入 vault → 生成教程。 */
 export function pickLocalMedia(plugin: ElpPlugin): void {
-  const files = plugin.app.vault.getFiles().filter((f) => MEDIA_EXT.has(f.extension.toLowerCase()));
-  if (files.length === 0) { new Notice('vault 中没有音视频文件'); return; }
-  new MediaPickModal(plugin.app, files, (media) => void onMediaPicked(plugin, media)).open();
+  const input = createEl('input', { type: 'file', attr: { accept: MEDIA_ACCEPT } });
+  input.onchange = () => {
+    const f = input.files?.[0];
+    if (f) void importPickedFile(plugin, f);
+  };
+  input.click();
 }
 
-class MediaPickModal extends FuzzySuggestModal<TFile> {
-  constructor(app: App, private files: TFile[], private onPick: (f: TFile) => void) {
-    super(app);
-    this.setPlaceholder('选择本地音视频文件');
+/** 把系统选择器拿到的文件接进原流程：vault 内文件直接用，vault 外导入副本。 */
+async function importPickedFile(plugin: ElpPlugin, picked: File): Promise<void> {
+  const ext = (picked.name.split('.').pop() ?? '').toLowerCase();
+  if (!MEDIA_EXT.has(ext)) {
+    new Notice(`不支持的格式：.${ext}`);
+    return;
   }
-  getItems(): TFile[] { return this.files; }
-  getItemText(f: TFile): string { return f.path; }
-  onChooseItem(f: TFile): void { this.onPick(f); }
+  // 桌面端：若选中的就是 vault 内文件，不复制，直接用原文件
+  const abs = (picked as File & { path?: string }).path;
+  const adapter = plugin.app.vault.adapter as { getBasePath?: () => string };
+  const base = adapter.getBasePath?.();
+  if (abs && base && abs.startsWith(base)) {
+    const rel = abs.slice(base.length).replace(/\\/g, '/').replace(/^\/+/, '');
+    const existing = plugin.app.vault.getAbstractFileByPath(rel);
+    if (existing instanceof TFile) {
+      await onMediaPicked(plugin, existing);
+      return;
+    }
+  }
+  // vault 外：导入到 <教程目录>/_imports/
+  const dir = `${plugin.settings.lessonsFolder}/_imports`;
+  if (!plugin.app.vault.getAbstractFileByPath(dir)) {
+    await plugin.app.vault.createFolder(dir).catch(() => undefined);
+  }
+  let dest = `${dir}/${picked.name}`;
+  for (let i = 1; plugin.app.vault.getAbstractFileByPath(dest); i++) {
+    dest = `${dir}/${picked.name.replace(/(\.[^.]+)$/, `-${i}$1`)}`;
+  }
+  const notice = new Notice(`导入 ${picked.name}…`, 0);
+  try {
+    const file = await plugin.app.vault.createBinary(dest, await picked.arrayBuffer());
+    notice.hide();
+    await onMediaPicked(plugin, file);
+  } catch (e) {
+    notice.hide();
+    new Notice(`导入失败：${(e as Error).message}`);
+  }
 }
 
 function findSidecarSubtitle(plugin: ElpPlugin, media: TFile): TFile | null {
@@ -57,8 +91,25 @@ class SubtitleSourceModal extends Modal {
     contentEl.createEl('h3', { text: `${this.media.name} 没有同名字幕` });
 
     new Setting(contentEl)
-      .setName('选择 vault 中的字幕文件')
-      .addButton((b) => b.setButtonText('选择 .vtt / .srt').onClick(() => {
+      .setName('选择字幕文件（.vtt / .srt）')
+      .addButton((b) => b.setButtonText('从文件系统选…').setCta().onClick(() => {
+        const input = createEl('input', { type: 'file', attr: { accept: '.vtt,.srt' } });
+        input.onchange = () => {
+          const f = input.files?.[0];
+          if (!f) return;
+          this.close();
+          void (async () => {
+            const text = await f.text();
+            await generateFromMedia(this.plugin, {
+              title: this.media.basename,
+              media: { kind: 'local', path: this.media.path },
+              subtitleText: text,
+            });
+          })();
+        };
+        input.click();
+      }))
+      .addButton((b) => b.setButtonText('从 vault 选').onClick(() => {
         this.close();
         new SubtitlePickModal(this.app, this.plugin, (sub) => {
           void generateFromMedia(this.plugin, {

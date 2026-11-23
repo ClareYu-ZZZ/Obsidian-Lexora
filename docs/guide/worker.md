@@ -65,3 +65,17 @@ docker compose pull && docker compose up -d
 ::: warning 容量提醒
 转写并发≈CPU 核数/2。家用 4 核适合熟人规模；面向付费用户请部署在 8 vCPU 以上的云服务器。
 :::
+
+
+## 运维页面（/admin）
+
+worker v1.4.0 起内置运维面板：浏览器打开 `https://worker.你的域名/admin`，登录弹窗里**用户名随意、密码填管理 token**（`LEXORA_TOKEN`）。
+
+内容（15 秒自动刷新）：
+
+- **系统**：CPU / 内存 / 负载 / 磁盘实时值 + 24 小时曲线（30s 采样）
+- **任务监控**：转写 / 切片 / TTS / 字幕的今日与 7 天量、失败数、平均与 P50/P95 耗时，近 20 条任务明细
+- **付费用户活跃**：7 天内用 license key 调用过的用户、调用量与最近活跃时间
+- **订阅与收入**：`sign.mjs` 每次签发自动写入私钥旁的 `issued.jsonl`；把它挂载到容器 `/data/issued.jsonl`（compose 已留注释）即可看到已签发 / 在期订阅数与累计收入
+
+指标存放在容器内 `~/.cache/elp-worker/metrics.db`（与模型缓存同一个卷），重启不丢。

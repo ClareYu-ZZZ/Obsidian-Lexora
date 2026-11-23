@@ -159,10 +159,83 @@ class Job:
     error: Optional[str] = None
     result_path: Optional[Path] = None
     created: float = field(default_factory=time.time)
+    caller: str = "admin"
 
 
 JOBS: dict[str, Job] = {}
 JOBS_LOCK = threading.Lock()
+
+# ---------------------------------------------------------------- 运维指标
+# stdlib-only：sqlite 持久化事件（放 ~/.cache 卷里，重启不丢）+ 内存系统采样环。
+import sqlite3
+from collections import deque
+
+_cache_dir = Path.home() / ".cache" / "elp-worker"
+try:
+    _cache_dir.mkdir(parents=True, exist_ok=True)
+    METRICS_DB = Path(os.environ.get("LEXORA_METRICS_DB", _cache_dir / "metrics.db"))
+except Exception:
+    METRICS_DB = WORK_DIR / "metrics.db"
+_mx_conn = sqlite3.connect(METRICS_DB, check_same_thread=False)
+_mx_conn.execute(
+    "CREATE TABLE IF NOT EXISTS events (ts REAL, kind TEXT, caller TEXT, duration_ms INTEGER, ok INTEGER, detail TEXT)"
+)
+_mx_conn.execute("CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts)")
+_mx_conn.commit()
+_mx_lock = threading.Lock()
+STARTED_AT = time.time()
+ISSUED_FILE = Path(os.environ.get("LEXORA_ISSUED_FILE", "/data/issued.jsonl"))
+
+
+def _record(kind: str, caller: str, t0: float, ok: bool, detail: str = "") -> None:
+    try:
+        with _mx_lock:
+            _mx_conn.execute(
+                "INSERT INTO events VALUES (?,?,?,?,?,?)",
+                (time.time(), kind, caller, int((time.time() - t0) * 1000), 1 if ok else 0, detail[:200]),
+            )
+            _mx_conn.commit()
+    except Exception:
+        pass
+
+
+_SYS_SAMPLES: deque = deque(maxlen=2880)  # 24h @ 30s
+
+
+def _read_cpu() -> tuple[int, int]:
+    parts = Path("/proc/stat").read_text().splitlines()[0].split()[1:]
+    vals = [int(x) for x in parts]
+    idle = vals[3] + (vals[4] if len(vals) > 4 else 0)
+    return sum(vals), idle
+
+
+def _sys_sampler() -> None:
+    prev_total, prev_idle = _read_cpu()
+    while True:
+        time.sleep(30)
+        try:
+            total, idle = _read_cpu()
+            dt, di = total - prev_total, idle - prev_idle
+            prev_total, prev_idle = total, idle
+            cpu = round(100 * (1 - di / dt), 1) if dt > 0 else 0.0
+            mem = {}
+            for line in Path("/proc/meminfo").read_text().splitlines():
+                k, v = line.split(":", 1)
+                mem[k] = int(v.strip().split()[0])
+            mem_pct = round(100 * (1 - mem.get("MemAvailable", 0) / mem.get("MemTotal", 1)), 1)
+            du = shutil.disk_usage("/")
+            _SYS_SAMPLES.append({
+                "ts": int(time.time()),
+                "cpu": cpu,
+                "mem": mem_pct,
+                "load": round(os.getloadavg()[0], 2),
+                "disk": round(100 * du.used / du.total, 1),
+            })
+        except Exception:
+            pass
+
+
+threading.Thread(target=_sys_sampler, daemon=True).start()
 _whisper_model = None
 _whisper_lock = threading.Lock()
 _piper_voices: dict = {}
@@ -266,9 +339,11 @@ def _run_transcribe(job: Job, media: Path, language: str) -> None:
         job.result_path = out
         job.progress = 1.0
         job.status = "done"
+        _record(job.type, job.caller, job.created, True)
     except Exception as e:  # noqa: BLE001 — job errors surface to the client
         job.status = "failed"
         job.error = str(e)
+        _record(job.type, job.caller, job.created, False, str(e)[:200])
     finally:
         media.unlink(missing_ok=True)
 
@@ -305,9 +380,11 @@ def _run_clip(job: Job, media: Path, segments: list) -> None:
         shutil.rmtree(tmp_dir, ignore_errors=True)
         job.result_path = out_zip
         job.status = "done"
+        _record(job.type, job.caller, job.created, True)
     except Exception as e:  # noqa: BLE001
         job.status = "failed"
         job.error = str(e)
+        _record(job.type, job.caller, job.created, False, str(e)[:200])
     finally:
         media.unlink(missing_ok=True)
 
@@ -370,9 +447,11 @@ def _run_ytmedia(job: Job, video_id: str, want_video: bool) -> None:
         job.result_path = out
         job.progress = 1.0
         job.status = "done"
+        _record(job.type, job.caller, job.created, True)
     except Exception as e:  # noqa: BLE001
         job.status = "failed"
         job.error = str(e)[:300]
+        _record(job.type, job.caller, job.created, False, str(e)[:200])
 
 
 COOKIES_FILE = Path(os.environ.get("LEXORA_COOKIES", "/app/cookies.txt"))
@@ -440,7 +519,7 @@ async def create_job(
     if type not in ("transcribe", "clip"):
         raise HTTPException(status_code=400, detail=f"unsupported job type: {type}")
     opts = json.loads(options or "{}")
-    job = Job(id=uuid.uuid4().hex, type=type)
+    job = Job(id=uuid.uuid4().hex, type=type, caller=caller)
     media = WORK_DIR / f"{job.id}_{Path(file.filename or 'media').name}"
     with media.open("wb") as fh:
         while chunk := await file.read(1 << 20):
@@ -517,7 +596,7 @@ def ytaudio(req: YtAudioRequest, caller: str = Depends(require_auth)) -> JSONRes
         raise HTTPException(status_code=501, detail="yt-dlp not installed (pip install yt-dlp)")
     if not shutil.which("ffmpeg"):
         raise HTTPException(status_code=501, detail="ffmpeg not installed")
-    job = Job(id=uuid.uuid4().hex, type="ytaudio")
+    job = Job(id=uuid.uuid4().hex, type="ytaudio", caller=caller)
     with JOBS_LOCK:
         JOBS[job.id] = job
     threading.Thread(target=_run_ytmedia, args=(job, vid, bool(req.video)), daemon=True).start()
@@ -535,10 +614,12 @@ def subtitle(req: SubtitleRequest, caller: str = Depends(require_auth)) -> JSONR
     """只拉 YouTube 字幕（不下载音视频）：人工字幕优先，ASR 自动字幕兜底。"""
     if caller != "admin":
         raise HTTPException(status_code=403, detail="托管 worker 未开放 YouTube 功能，请自托管")
+    _t0 = time.time()
     vid = req.video_id.strip()
     if not vid or len(vid) > 20:
         raise HTTPException(status_code=400, detail="bad video_id")
     if FAKE:
+        _record("subtitle", caller, _t0, True)
         return JSONResponse({"vtt": FAKE_VTT, "auto": False})
     if not _has_ytdlp():
         raise HTTPException(status_code=501, detail="yt-dlp not installed (pip install yt-dlp)")
@@ -589,6 +670,7 @@ def subtitle(req: SubtitleRequest, caller: str = Depends(require_auth)) -> JSONR
             if picked:
                 text = open(picked, encoding="utf-8", errors="replace").read()
                 if "WEBVTT" in text:
+                    _record("subtitle", caller, _t0, True)
                     return JSONResponse({"vtt": text, "auto": auto})
     raise HTTPException(status_code=404, detail="no subtitles for this video")
 
@@ -624,6 +706,7 @@ def _pad_wav(data: bytes, lead: float = 0.12, tail: float = 0.18) -> bytes:
 def tts(req: TtsRequest, caller: str = Depends(require_auth)) -> Response:
     if caller != "admin":
         _quota_take(caller, "TTS", LICENSED_DAILY_TTS)
+    _t0 = time.time()
     text = req.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="empty text")
@@ -631,6 +714,7 @@ def tts(req: TtsRequest, caller: str = Depends(require_auth)) -> Response:
         raise HTTPException(status_code=400, detail="text too long (<=2000 chars)")
     speed = min(2.0, max(0.5, req.speed or 1.0))
     if FAKE:
+        _record("tts", caller, _t0, True)
         return Response(content=_silent_wav(), media_type="audio/wav")
     req_voice = (req.voice or "").strip() or None
     if req_voice and not _piper_onnx(req_voice).exists():
@@ -668,8 +752,162 @@ def tts(req: TtsRequest, caller: str = Depends(require_auth)) -> Response:
         data = buf.getvalue()
         if len(data) < 1000:
             raise RuntimeError(f"synthesized only {len(data)} bytes")
+        _record("tts", caller, _t0, True)
         return Response(content=_pad_wav(data), media_type="audio/wav")
     except HTTPException:
         raise
     except Exception as e:  # noqa: BLE001 — 细节透给客户端便于排查
         raise HTTPException(status_code=500, detail=f"piper failed: {type(e).__name__}: {e}")
+
+
+# ---------------------------------------------------------------- 运维页面（/admin）
+def require_admin(request: Request) -> None:
+    """站长专用：Bearer 管理 token，或浏览器 Basic 认证（任意用户名 + 管理 token 作密码）。"""
+    header = request.headers.get("authorization", "")
+    if header == f"Bearer {TOKEN}":
+        return
+    if header.startswith("Basic "):
+        try:
+            if base64.b64decode(header[6:]).decode().split(":", 1)[1] == TOKEN:
+                return
+        except Exception:  # noqa: BLE001
+            pass
+    raise HTTPException(
+        status_code=401,
+        detail="ops auth required",
+        headers={"WWW-Authenticate": 'Basic realm="lexora-ops"'},
+    )
+
+
+def _pct(sorted_ms: list, q: float) -> int:
+    if not sorted_ms:
+        return 0
+    return sorted_ms[min(len(sorted_ms) - 1, int(q * len(sorted_ms)))]
+
+
+@app.get("/admin/api/stats", dependencies=[Depends(require_admin)])
+def admin_stats() -> JSONResponse:
+    now = time.time()
+    day0 = now - 86400
+    week0 = now - 7 * 86400
+    with _mx_lock:
+        rows = _mx_conn.execute(
+            "SELECT ts, kind, caller, duration_ms, ok, detail FROM events WHERE ts > ? ORDER BY ts DESC",
+            (week0,),
+        ).fetchall()
+    kinds: dict = {}
+    users: dict = {}
+    for ts, kind, caller, ms, ok, _d in rows:
+        k = kinds.setdefault(kind, {"today": 0, "week": 0, "fail": 0, "ms": []})
+        k["week"] += 1
+        if ts > day0:
+            k["today"] += 1
+        if not ok:
+            k["fail"] += 1
+        else:
+            k["ms"].append(ms)
+        if caller.startswith("pro:"):
+            u = users.setdefault(caller[4:], {"today": 0, "week": 0, "last": 0})
+            u["week"] += 1
+            if ts > day0:
+                u["today"] += 1
+            u["last"] = max(u["last"], ts)
+    for k in kinds.values():
+        k["ms"].sort()
+        k["avg_ms"] = int(sum(k["ms"]) / len(k["ms"])) if k["ms"] else 0
+        k["p50_ms"] = _pct(k["ms"], 0.5)
+        k["p95_ms"] = _pct(k["ms"], 0.95)
+        del k["ms"]
+    issued = []
+    if ISSUED_FILE.exists():
+        for line in ISSUED_FILE.read_text(encoding="utf-8").splitlines():
+            try:
+                issued.append(json.loads(line))
+            except Exception:  # noqa: BLE001
+                pass
+    active = [i for i in issued if i.get("exp", 0) > now * 1000]
+    revenue = sum(float(i.get("price", 0) or 0) for i in issued)
+    sys_now = _SYS_SAMPLES[-1] if _SYS_SAMPLES else {}
+    return JSONResponse({
+        "now": int(now),
+        "uptime_s": int(now - STARTED_AT),
+        "apiVersion": API_VERSION,
+        "whisper": {"model": WHISPER_MODEL, "threads": WHISPER_THREADS},
+        "system": {"now": sys_now, "history": list(_SYS_SAMPLES)},
+        "jobs": {
+            "kinds": kinds,
+            "recent": [
+                {"ts": int(ts), "kind": kind, "caller": caller, "ms": ms, "ok": bool(ok), "detail": d}
+                for ts, kind, caller, ms, ok, d in rows[:20]
+            ],
+        },
+        "licensedUsers": [
+            {"email": e, **v} for e, v in sorted(users.items(), key=lambda kv: -kv[1]["last"])
+        ],
+        "issued": {
+            "total": len(issued),
+            "active": len(active),
+            "revenue": revenue,
+            "list": sorted(issued, key=lambda i: -(i.get("iat") or 0))[:50],
+        },
+    })
+
+
+ADMIN_HTML = """<!DOCTYPE html>
+<html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Lexora 运维</title><style>
+:root{color-scheme:dark}body{margin:0;font:14px/1.6 -apple-system,"PingFang SC",sans-serif;background:#10141a;color:#dde3ea}
+.wrap{max-width:1080px;margin:0 auto;padding:24px 16px}h1{font-size:18px;margin:0 0 4px}
+.muted{color:#8a94a3;font-size:12px}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:16px 0}
+.card{background:#1a2029;border:1px solid #28303c;border-radius:10px;padding:12px 14px}
+.card b{display:block;font-size:22px;margin-top:2px}.card span{color:#8a94a3;font-size:12px}
+h2{font-size:14px;margin:22px 0 8px;color:#aab4c2}table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #222a35}th{color:#8a94a3;font-weight:500}
+.ok{color:#5dd39e}.bad{color:#ff7a7a}svg{display:block;width:100%;height:72px;background:#1a2029;border:1px solid #28303c;border-radius:10px}
+</style></head><body><div class="wrap">
+<h1>Lexora worker 运维</h1><div class="muted" id="meta">加载中…</div>
+<div class="cards" id="cards"></div>
+<h2>CPU / 内存（24h，30s 采样）</h2><svg id="spark" viewBox="0 0 600 72" preserveAspectRatio="none"></svg>
+<h2>任务统计（7 天）</h2><table id="kinds"><thead><tr><th>类型</th><th>今日</th><th>7天</th><th>失败</th><th>均耗时</th><th>P50</th><th>P95</th></tr></thead><tbody></tbody></table>
+<h2>付费用户活跃（worker 侧，7 天）</h2><table id="users"><thead><tr><th>邮箱</th><th>今日调用</th><th>7天调用</th><th>最近活跃</th></tr></thead><tbody></tbody></table>
+<h2>已签发订阅<span class="muted">（来自 issued.jsonl，未挂载则为空）</span></h2><table id="issued"><thead><tr><th>邮箱</th><th>签发</th><th>到期</th><th>价格</th><th>状态</th></tr></thead><tbody></tbody></table>
+<h2>近期任务</h2><table id="recent"><thead><tr><th>时间</th><th>类型</th><th>调用方</th><th>耗时</th><th>结果</th></tr></thead><tbody></tbody></table>
+</div><script>
+const fmt=(ts)=>new Date(ts*1000).toLocaleString('zh-CN',{hour12:false});
+const dur=(ms)=>ms>=60000?(ms/60000).toFixed(1)+' 分':ms>=1000?(ms/1000).toFixed(1)+' 秒':ms+' ms';
+async function load(){
+  const r=await fetch('admin/api/stats'.startsWith('/')?'/admin/api/stats':'/admin/api/stats');
+  if(!r.ok){document.getElementById('meta').textContent='加载失败 HTTP '+r.status;return}
+  const d=await r.json();
+  const up=Math.floor(d.uptime_s/3600)+'h'+Math.floor(d.uptime_s%3600/60)+'m';
+  document.getElementById('meta').textContent=`API v${d.apiVersion} · whisper ${d.whisper.model}×${d.whisper.threads}线程 · 运行 ${up} · 刷新于 ${fmt(d.now)}`;
+  const s=d.system.now||{};
+  const todayJobs=Object.values(d.jobs.kinds).reduce((n,k)=>n+k.today,0);
+  document.getElementById('cards').innerHTML=[
+    ['CPU',(s.cpu??'—')+'%'],['内存',(s.mem??'—')+'%'],['负载',s.load??'—'],['磁盘',(s.disk??'—')+'%'],
+    ['今日任务',todayJobs],['在期订阅',d.issued.active],['累计收入','¥'+d.issued.revenue]
+  ].map(([t,v])=>`<div class="card"><span>${t}</span><b>${v}</b></div>`).join('');
+  const h=d.system.history;
+  if(h.length>1){
+    const xs=h.map((p,i)=>i/(h.length-1)*600);
+    const line=(key,color)=>`<polyline fill="none" stroke="${color}" stroke-width="1.5" points="${h.map((p,i)=>xs[i].toFixed(1)+','+(70-p[key]*0.68).toFixed(1)).join(' ')}"/>`;
+    document.getElementById('spark').innerHTML=line('cpu','#5da9ff')+line('mem','#5dd39e');
+  }
+  document.querySelector('#kinds tbody').innerHTML=Object.entries(d.jobs.kinds).map(([k,v])=>
+    `<tr><td>${k}</td><td>${v.today}</td><td>${v.week}</td><td class="${v.fail?'bad':''}">${v.fail}</td><td>${dur(v.avg_ms)}</td><td>${dur(v.p50_ms)}</td><td>${dur(v.p95_ms)}</td></tr>`).join('')||'<tr><td colspan=7 class="muted">暂无任务</td></tr>';
+  document.querySelector('#users tbody').innerHTML=d.licensedUsers.map(u=>
+    `<tr><td>${u.email}</td><td>${u.today}</td><td>${u.week}</td><td>${fmt(u.last)}</td></tr>`).join('')||'<tr><td colspan=4 class="muted">尚无付费用户调用</td></tr>';
+  document.querySelector('#issued tbody').innerHTML=d.issued.list.map(i=>{
+    const act=i.exp>Date.now();
+    return `<tr><td>${i.email}</td><td>${i.iat?fmt(i.iat/1000):'—'}</td><td>${i.exp?fmt(i.exp/1000):'—'}</td><td>${i.price?'¥'+i.price:'—'}</td><td class="${act?'ok':'bad'}">${act?'在期':'已到期'}</td></tr>`;
+  }).join('')||'<tr><td colspan=5 class="muted">未挂载 issued.jsonl</td></tr>';
+  document.querySelector('#recent tbody').innerHTML=d.jobs.recent.map(e=>
+    `<tr><td>${fmt(e.ts)}</td><td>${e.kind}</td><td>${e.caller.replace('pro:','')}</td><td>${dur(e.ms)}</td><td class="${e.ok?'ok':'bad'}">${e.ok?'成功':'失败 '+(e.detail||'')}</td></tr>`).join('')||'<tr><td colspan=5 class="muted">暂无记录</td></tr>';
+}
+load();setInterval(load,15000);
+</script></body></html>"""
+
+
+@app.get("/admin", dependencies=[Depends(require_admin)])
+def admin_page() -> Response:
+    return Response(content=ADMIN_HTML, media_type="text/html; charset=utf-8")
