@@ -1522,3 +1522,16 @@ body.elp-style-background .elp-word {
 
 /* 连播/字幕模式按钮选中态 */
 .elp-icon-btn.is-on { color: var(--interactive-accent); background: var(--background-modifier-hover); }
+
+/* 卷轴字幕盒：固定高度内部滚动，视频位置不动；已读句虚化 */
+.elp-ts-scrollbox {
+  position: relative;
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--background-secondary);
+  scrollbar-width: thin;
+}
+.elp-ts-scrollbox .elp-ts-sent.is-past { opacity: 0.38; }
+.elp-ts-scrollbox .elp-ts-sent.is-past:hover { opacity: 0.85; }

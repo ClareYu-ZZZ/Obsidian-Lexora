@@ -640,11 +640,21 @@ export class PlayerController {
 
   private updateSentence(): void {
     if (this.transcriptEl) {
-      this.transcriptEl.querySelectorAll('.elp-ts-sent.is-current').forEach((n) => n.removeClass('is-current'));
+      this.transcriptEl.querySelectorAll('.elp-ts-sent').forEach((n) => {
+        if (!(n instanceof HTMLElement)) return;
+        const i = Number(n.getAttr('data-idx'));
+        n.toggleClass('is-current', i === this.current);
+        n.toggleClass('is-past', this.current >= 0 && i < this.current);
+      });
       const cur = this.transcriptEl.querySelector(`.elp-ts-sent[data-idx="${this.current}"]`);
       if (cur instanceof HTMLElement) {
-        cur.addClass('is-current');
-        cur.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        if (this.transcriptEl.hasClass('elp-ts-scrollbox')) {
+          // 只滚字幕盒自身，绝不带动面板（否则视频会被顶出视口）
+          const top = Math.max(0, cur.offsetTop - this.transcriptEl.clientHeight / 2 + cur.offsetHeight / 2);
+          this.transcriptEl.scrollTo({ top, behavior: 'smooth' });
+        } else {
+          cur.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        }
       }
     }
     void this.refreshMineBtn();
@@ -792,7 +802,7 @@ export class PlayerController {
 
     // ---- 全文转写区（当前句高亮+滚动跟随；文本课常驻，音视频课由字幕模式切换） ----
     {
-      const wrap = root.createDiv({ cls: 'elp-pane-transcript' });
+      const wrap = root.createDiv({ cls: 'elp-pane-transcript' + (this.backend.kind !== 'tts' ? ' elp-ts-scrollbox' : '') });
       const ranges = paraRanges(this.data.segments);
       ranges.forEach((p, ri) => {
         const paraEl = wrap.createDiv({ cls: 'elp-ts-para' });
