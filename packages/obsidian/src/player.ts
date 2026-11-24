@@ -95,27 +95,57 @@ export function registerPlayer(plugin: ElpPlugin): void {
         item.createSpan({ cls: 'elp-check-box', text: checked ? '✓' : '' });
         const label = labels[k + 1] ?? '';
         if (label) item.createSpan({ cls: 'elp-check-text', text: label });
-        item.onclick = () => void toggleFollowMark(plugin, ctx.sourcePath, raw, info?.lineStart ?? 0, info?.lineEnd ?? Number.MAX_SAFE_INTEGER, k, item);
+        item.onclick = () => {
+          // 点击时现取区块信息（渲染时的常因虚拟化失效），并带上长难句编号兜底锚点
+          const fresh = ctx.getSectionInfo(el);
+          let headingNo: number | null = null;
+          let blk: Element | null = el;
+          while (blk && headingNo === null) {
+            const h = blk.querySelector?.('h1,h2,h3,h4,h5,h6');
+            if (h) {
+              const m = (h.textContent ?? '').trim().match(/^(\d+)\./);
+              if (m) headingNo = parseInt(m[1], 10);
+              break;
+            }
+            blk = blk.previousElementSibling;
+          }
+          void toggleFollowMark(plugin, ctx.sourcePath, k, item, {
+            lineStart: fresh?.lineStart ?? info?.lineStart,
+            lineEnd: fresh?.lineEnd ?? info?.lineEnd,
+            headingNo,
+          });
+        };
       });
     }
   });
 }
 
-/** 切换 学习笔记 里某条跟读行的第 k 个 [ ]/[x]，回写文件。 */
+/** 切换 学习笔记 里某条跟读行的第 k 个 [ ]/[x]，回写文件。
+ *  定位三级兜底：区块行号 → 所属长难句标题号（### N.）→ 全文首条跟读行。 */
 async function toggleFollowMark(
-  plugin: ElpPlugin, sourcePath: string, rawLine: string,
-  lineStart: number, lineEnd: number, k: number, item: HTMLElement,
+  plugin: ElpPlugin, sourcePath: string, k: number, item: HTMLElement,
+  loc: { lineStart?: number; lineEnd?: number; headingNo?: number | null },
 ): Promise<void> {
   const file = plugin.app.vault.getAbstractFileByPath(sourcePath);
   if (!(file instanceof TFile)) return;
   await plugin.app.vault.process(file, (content) => {
     const lines = content.split('\n');
-    // 优先在本区块行号范围内找；找不到（区块信息缺失）退化为全文首个同文本行
+    const isFollow = (l: string) => l.includes('跟读：') && /\[( |x)\]/i.test(l);
     let target = -1;
-    for (let ln = Math.max(0, lineStart); ln <= Math.min(lineEnd, lines.length - 1); ln++) {
-      if (lines[ln].includes('跟读：')) { target = ln; break; }
+    if (loc.lineStart !== undefined && loc.lineEnd !== undefined) {
+      for (let ln = Math.max(0, loc.lineStart); ln <= Math.min(loc.lineEnd, lines.length - 1); ln++) {
+        if (isFollow(lines[ln])) { target = ln; break; }
+      }
     }
-    if (target < 0) target = lines.findIndex((l) => l.trim().endsWith(rawLine) || l.includes(rawLine));
+    if (target < 0 && loc.headingNo) {
+      const h = lines.findIndex((l) => l.startsWith(`### ${loc.headingNo}.`));
+      if (h >= 0) {
+        for (let ln = h + 1; ln < lines.length && !lines[ln].startsWith('### ') && !lines[ln].startsWith('## '); ln++) {
+          if (isFollow(lines[ln])) { target = ln; break; }
+        }
+      }
+    }
+    if (target < 0) target = lines.findIndex(isFollow);
     if (target < 0) return content;
     let count = -1;
     lines[target] = lines[target].replace(/\[( |x)\]/gi, (full, c: string) => {
@@ -623,6 +653,10 @@ export class PlayerController {
       this.loop = !this.loop;
       loopBtn.toggleClass('is-on', this.loop);
     };
+    iconButton(bar, 'list-video', '连播到结尾（从当前句不停顿播完）', () => {
+      const start = this.current < 0 ? 0 : this.current;
+      this.playSegment(start, this.data.segments.length - 1);
+    }, 'elp-pane-side');
 
     // ---- 进度条（本地/远程音视频才有真实时间轴） ----
     if (this.backend.kind === 'local') {

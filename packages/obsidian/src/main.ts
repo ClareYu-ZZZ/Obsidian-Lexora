@@ -1,4 +1,5 @@
 import { LicenseManager } from './license';
+import { setupProgressRing } from './progress-ring';
 import { checkForUpdate, sendTelemetryPing } from './telemetry';
 import { MarkdownView, Notice, Plugin, WorkspaceLeaf, addIcon } from 'obsidian';
 import type { EditorView } from '@codemirror/view';
@@ -50,6 +51,7 @@ export default class ElpPlugin extends Plugin {
     await this.loadSettings();
     this.license = new LicenseManager(this);
     void this.license.refresh();
+    setupProgressRing(this);
     // 延迟到启动稳定后再做更新检查与匿名统计（都可在设置关闭，且各自节流）
     window.setTimeout(() => {
       void checkForUpdate(this);

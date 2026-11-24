@@ -1489,3 +1489,22 @@ body.elp-style-background .elp-word {
 .elp-lib-meta { font-size: 11.5px; color: var(--text-muted); margin-top: 2px; }
 .elp-lib-btn { font-size: 12px; padding: 5px 12px; border-radius: 7px; cursor: pointer; }
 .elp-lib-btn.is-primary { background: var(--interactive-accent); color: var(--text-on-accent); border: none; font-weight: 600; }
+
+
+/* ---- 学习笔记悬浮进度环 ---- */
+.elp-ring-host { position: absolute; right: 22px; bottom: 22px; z-index: 40; cursor: pointer; }
+.elp-ring {
+  width: 64px; height: 64px; border-radius: 50%;
+  background: conic-gradient(var(--interactive-accent) calc(var(--elp-ring-pct) * 1%), var(--background-modifier-border) 0);
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: var(--shadow-s); transition: transform .15s ease;
+}
+.elp-ring-host:hover .elp-ring { transform: scale(1.06); }
+.elp-ring.is-full { background: var(--interactive-accent); }
+.elp-ring-in {
+  width: 52px; height: 52px; border-radius: 50%; background: var(--background-primary);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0;
+}
+.elp-ring-pct { font-size: 14px; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.elp-ring.is-full .elp-ring-pct { color: var(--interactive-accent); }
+.elp-ring-sub { font-size: 9px; color: var(--text-muted); }

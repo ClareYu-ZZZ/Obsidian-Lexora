@@ -23,7 +23,17 @@ export class NotesPanel {
   private root!: HTMLElement;
   private rows: NoteRow[] = [];
 
-  constructor(private plugin: ElpPlugin, private app: App) {}
+  private refreshTimer: number | null = null;
+
+  constructor(private plugin: ElpPlugin, private app: App) {
+    // 跟读勾选等改动落盘后 800ms 自动重扫，仪表盘实时反映进度
+    this.plugin.registerEvent(this.app.vault.on('modify', (f) => {
+      if (!f.path.startsWith(this.plugin.settings.lessonsFolder + '/')) return;
+      if (!this.root || !this.root.isConnected) return;
+      if (this.refreshTimer) window.clearTimeout(this.refreshTimer);
+      this.refreshTimer = window.setTimeout(() => void this.refresh(), 800);
+    }));
+  }
 
   mount(root: HTMLElement): void {
     this.root = root;
