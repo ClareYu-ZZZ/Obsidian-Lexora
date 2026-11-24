@@ -1478,3 +1478,14 @@ body.elp-style-background .elp-word.elp-mastered {
 body.elp-style-background .elp-word {
   background: color-mix(in srgb, var(--elp-bc, var(--color-accent)) 18%, transparent);
 }
+
+
+/* ---- 精选课（公版内容库） ---- */
+.elp-lib-list { display: flex; flex-direction: column; gap: 8px; margin: 8px 0 4px; }
+.elp-lib-empty { color: var(--text-muted); font-size: 12.5px; padding: 6px 2px; }
+.elp-lib-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--background-modifier-border); border-radius: 10px; }
+.elp-lib-info { flex: 1; min-width: 0; }
+.elp-lib-title { font-size: 13.5px; font-weight: 600; }
+.elp-lib-meta { font-size: 11.5px; color: var(--text-muted); margin-top: 2px; }
+.elp-lib-btn { font-size: 12px; padding: 5px 12px; border-radius: 7px; cursor: pointer; }
+.elp-lib-btn.is-primary { background: var(--interactive-accent); color: var(--text-on-accent); border: none; font-weight: 600; }

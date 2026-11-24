@@ -20,7 +20,7 @@ RUN mkdir -p /voices && cd /voices && \
     curl -fsSLO https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/medium/en_US-amy-medium.onnx.json && \
     curl -fsSLO https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_GB/alba/medium/en_GB-alba-medium.onnx && \
     curl -fsSLO https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_GB/alba/medium/en_GB-alba-medium.onnx.json
-COPY app.py .
+COPY app.py admin_ui.py .
 EXPOSE 8321
 # NAS 上以 -e LEXORA_TOKEN=xxx 固定 token；模型缓存挂载 /root/.cache 可持久化
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8321"]

@@ -1,3 +1,4 @@
+import { cachedRecommended, refreshRecommended, renderLibrarySection } from './official';
 import { App, Modal, Notice, Setting, TFile, requestUrl, setIcon } from 'obsidian';
 import {
   extractVideoId, htmlToText, normalizeFeedUrl, parseFeed, parseYoutubeChannelPage, youtubeWatchUrl,
@@ -523,7 +524,10 @@ class AddFeedModal extends Modal {
     const recWrap = contentEl.createDiv({ cls: 'elp-preset-grid' });
     const existingUrls = new Set(this.plugin.feeds.list().map((f) => f.url));
     const existingNames = new Set(this.plugin.feeds.list().map((f) => f.name.toLowerCase()));
-    for (const p of PRESET_FEEDS) {
+    // 远端清单（控制台「推荐源」页维护，缓存 7 天）优先；拉不到回退内置
+    const presets = cachedRecommended(this.plugin) ?? PRESET_FEEDS;
+    void refreshRecommended(this.plugin);
+    for (const p of presets) {
       const chip = recWrap.createEl('button', { cls: 'elp-preset' });
       chip.createSpan({ cls: 'elp-preset-name', text: p.name });
       chip.createSpan({ cls: 'elp-preset-hint', text: p.hint });
@@ -540,6 +544,14 @@ class AddFeedModal extends Modal {
         else chip.disabled = false;
       };
     }
+
+    // ---- 精选课（公版内容库）----
+    const libHead = contentEl.createDiv({ cls: 'elp-modal-subhead' });
+    setIcon(libHead.createSpan(), 'book-audio');
+    libHead.createSpan({ text: '精选课（公版内容库 · 试听免费）' });
+    const libWrap = contentEl.createDiv({ cls: 'elp-lib-list' });
+    libWrap.createDiv({ cls: 'elp-lib-empty', text: '加载中…' });
+    void renderLibrarySection(this.plugin, libWrap, () => this.close());
 
     // ---- 从本地获取 ----
     const head = contentEl.createDiv({ cls: 'elp-modal-subhead' });

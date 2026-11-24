@@ -15,12 +15,16 @@ elp-worker — Lexora 的本地伴侣服务（自托管，开源）。
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
 import os
 import secrets
+import re
 import shutil
 import tempfile
 import threading
+from datetime import datetime, timezone
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -30,7 +34,7 @@ from typing import Optional
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 
-API_VERSION = "1.1"
+API_VERSION = "1.5"
 FAKE = os.environ.get("LEXORA_FAKE") == "1"
 WHISPER_MODEL = os.environ.get("LEXORA_WHISPER_MODEL", "small")
 PIPER_VOICE = os.environ.get("LEXORA_PIPER_VOICE", "en_US-ryan-high")
@@ -236,6 +240,27 @@ def _sys_sampler() -> None:
 
 
 threading.Thread(target=_sys_sampler, daemon=True).start()
+
+
+# ---------------------------------------------------------------- 推荐源 & 公版内容库存储
+FEEDS_FILE = Path(os.environ.get("LEXORA_FEEDS_FILE", _cache_dir / "feeds.json"))
+LIB_DIR = Path(os.environ.get("LEXORA_LIBRARY_DIR", _cache_dir / "library"))
+LIB_META = LIB_DIR / "library.json"
+LIB_DIR.mkdir(parents=True, exist_ok=True)
+_STORE_LOCK = threading.Lock()
+
+
+def _load_json(path: Path, default):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return default
+
+
+def _save_json(path: Path, data) -> None:
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp.replace(path)
 _whisper_model = None
 _whisper_lock = threading.Lock()
 _piper_voices: dict = {}
@@ -761,22 +786,55 @@ def tts(req: TtsRequest, caller: str = Depends(require_auth)) -> Response:
 
 
 # ---------------------------------------------------------------- 运维页面（/admin）
+OPS_COOKIE = hashlib.sha256(f"lexora-ops:{TOKEN}".encode()).hexdigest()
+_LOGIN_FAILS: dict = {}
+
+
+def _is_admin_request(request: Request) -> bool:
+    if request.headers.get("authorization", "") == f"Bearer {TOKEN}":
+        return True
+    return hmac.compare_digest(request.cookies.get("lexora_ops", ""), OPS_COOKIE)
+
+
 def require_admin(request: Request) -> None:
-    """站长专用：Bearer 管理 token，或浏览器 Basic 认证（任意用户名 + 管理 token 作密码）。"""
-    header = request.headers.get("authorization", "")
-    if header == f"Bearer {TOKEN}":
-        return
-    if header.startswith("Basic "):
-        try:
-            if base64.b64decode(header[6:]).decode().split(":", 1)[1] == TOKEN:
-                return
-        except Exception:  # noqa: BLE001
-            pass
-    raise HTTPException(
-        status_code=401,
-        detail="ops auth required",
-        headers={"WWW-Authenticate": 'Basic realm="lexora-ops"'},
+    """站长专用：Bearer 管理 token，或登录页签发的 HttpOnly cookie。"""
+    if not _is_admin_request(request):
+        raise HTTPException(status_code=401, detail="ops auth required")
+
+
+@app.get("/healthz")
+def healthz() -> JSONResponse:
+    return JSONResponse({"apiVersion": API_VERSION, "model": WHISPER_MODEL})
+
+
+@app.post("/admin/login")
+def admin_login(request: Request, body: dict) -> JSONResponse:
+    ip = request.client.host if request.client else "?"
+    now = time.time()
+    rec = _LOGIN_FAILS.get(ip)
+    if rec and rec[0] >= 5 and now - rec[1] < 600:
+        raise HTTPException(status_code=429, detail="失败次数过多，10 分钟后再试")
+    if rec and now - rec[1] >= 600:
+        _LOGIN_FAILS.pop(ip, None)
+    if not hmac.compare_digest(str(body.get("token", "")), TOKEN):
+        cur = _LOGIN_FAILS.setdefault(ip, [0, now])
+        cur[0] += 1
+        raise HTTPException(status_code=401, detail="token 不正确")
+    _LOGIN_FAILS.pop(ip, None)
+    resp = JSONResponse({"ok": True})
+    secure = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+    resp.set_cookie(
+        "lexora_ops", OPS_COOKIE, httponly=True, samesite="strict",
+        secure=secure, max_age=7 * 86400 if body.get("remember") else None,
     )
+    return resp
+
+
+@app.post("/admin/logout")
+def admin_logout() -> JSONResponse:
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie("lexora_ops")
+    return resp
 
 
 def _pct(sorted_ms: list, q: float) -> int:
@@ -853,61 +911,182 @@ def admin_stats() -> JSONResponse:
     })
 
 
-ADMIN_HTML = """<!DOCTYPE html>
-<html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Lexora 运维</title><style>
-:root{color-scheme:dark}body{margin:0;font:14px/1.6 -apple-system,"PingFang SC",sans-serif;background:#10141a;color:#dde3ea}
-.wrap{max-width:1080px;margin:0 auto;padding:24px 16px}h1{font-size:18px;margin:0 0 4px}
-.muted{color:#8a94a3;font-size:12px}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:16px 0}
-.card{background:#1a2029;border:1px solid #28303c;border-radius:10px;padding:12px 14px}
-.card b{display:block;font-size:22px;margin-top:2px}.card span{color:#8a94a3;font-size:12px}
-h2{font-size:14px;margin:22px 0 8px;color:#aab4c2}table{width:100%;border-collapse:collapse;font-size:13px}
-th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #222a35}th{color:#8a94a3;font-weight:500}
-.ok{color:#5dd39e}.bad{color:#ff7a7a}svg{display:block;width:100%;height:72px;background:#1a2029;border:1px solid #28303c;border-radius:10px}
-</style></head><body><div class="wrap">
-<h1>Lexora worker 运维</h1><div class="muted" id="meta">加载中…</div>
-<div class="cards" id="cards"></div>
-<h2>CPU / 内存（24h，30s 采样）</h2><svg id="spark" viewBox="0 0 600 72" preserveAspectRatio="none"></svg>
-<h2>任务统计（7 天）</h2><table id="kinds"><thead><tr><th>类型</th><th>今日</th><th>7天</th><th>失败</th><th>均耗时</th><th>P50</th><th>P95</th></tr></thead><tbody></tbody></table>
-<h2>付费用户活跃（worker 侧，7 天）</h2><table id="users"><thead><tr><th>邮箱</th><th>今日调用</th><th>7天调用</th><th>最近活跃</th></tr></thead><tbody></tbody></table>
-<h2>已签发订阅<span class="muted">（来自 issued.jsonl，未挂载则为空）</span></h2><table id="issued"><thead><tr><th>邮箱</th><th>签发</th><th>到期</th><th>价格</th><th>状态</th></tr></thead><tbody></tbody></table>
-<h2>近期任务</h2><table id="recent"><thead><tr><th>时间</th><th>类型</th><th>调用方</th><th>耗时</th><th>结果</th></tr></thead><tbody></tbody></table>
-</div><script>
-const fmt=(ts)=>new Date(ts*1000).toLocaleString('zh-CN',{hour12:false});
-const dur=(ms)=>ms>=60000?(ms/60000).toFixed(1)+' 分':ms>=1000?(ms/1000).toFixed(1)+' 秒':ms+' ms';
-async function load(){
-  const r=await fetch('admin/api/stats'.startsWith('/')?'/admin/api/stats':'/admin/api/stats');
-  if(!r.ok){document.getElementById('meta').textContent='加载失败 HTTP '+r.status;return}
-  const d=await r.json();
-  const up=Math.floor(d.uptime_s/3600)+'h'+Math.floor(d.uptime_s%3600/60)+'m';
-  document.getElementById('meta').textContent=`API v${d.apiVersion} · whisper ${d.whisper.model}×${d.whisper.threads}线程 · 运行 ${up} · 刷新于 ${fmt(d.now)}`;
-  const s=d.system.now||{};
-  const todayJobs=Object.values(d.jobs.kinds).reduce((n,k)=>n+k.today,0);
-  document.getElementById('cards').innerHTML=[
-    ['CPU',(s.cpu??'—')+'%'],['内存',(s.mem??'—')+'%'],['负载',s.load??'—'],['磁盘',(s.disk??'—')+'%'],
-    ['今日任务',todayJobs],['在期订阅',d.issued.active],['累计收入','¥'+d.issued.revenue]
-  ].map(([t,v])=>`<div class="card"><span>${t}</span><b>${v}</b></div>`).join('');
-  const h=d.system.history;
-  if(h.length>1){
-    const xs=h.map((p,i)=>i/(h.length-1)*600);
-    const line=(key,color)=>`<polyline fill="none" stroke="${color}" stroke-width="1.5" points="${h.map((p,i)=>xs[i].toFixed(1)+','+(70-p[key]*0.68).toFixed(1)).join(' ')}"/>`;
-    document.getElementById('spark').innerHTML=line('cpu','#5da9ff')+line('mem','#5dd39e');
-  }
-  document.querySelector('#kinds tbody').innerHTML=Object.entries(d.jobs.kinds).map(([k,v])=>
-    `<tr><td>${k}</td><td>${v.today}</td><td>${v.week}</td><td class="${v.fail?'bad':''}">${v.fail}</td><td>${dur(v.avg_ms)}</td><td>${dur(v.p50_ms)}</td><td>${dur(v.p95_ms)}</td></tr>`).join('')||'<tr><td colspan=7 class="muted">暂无任务</td></tr>';
-  document.querySelector('#users tbody').innerHTML=d.licensedUsers.map(u=>
-    `<tr><td>${u.email}</td><td>${u.today}</td><td>${u.week}</td><td>${fmt(u.last)}</td></tr>`).join('')||'<tr><td colspan=4 class="muted">尚无付费用户调用</td></tr>';
-  document.querySelector('#issued tbody').innerHTML=d.issued.list.map(i=>{
-    const act=i.exp>Date.now();
-    return `<tr><td>${i.email}</td><td>${i.iat?fmt(i.iat/1000):'—'}</td><td>${i.exp?fmt(i.exp/1000):'—'}</td><td>${i.price?'¥'+i.price:'—'}</td><td class="${act?'ok':'bad'}">${act?'在期':'已到期'}</td></tr>`;
-  }).join('')||'<tr><td colspan=5 class="muted">未挂载 issued.jsonl</td></tr>';
-  document.querySelector('#recent tbody').innerHTML=d.jobs.recent.map(e=>
-    `<tr><td>${fmt(e.ts)}</td><td>${e.kind}</td><td>${e.caller.replace('pro:','')}</td><td>${dur(e.ms)}</td><td class="${e.ok?'ok':'bad'}">${e.ok?'成功':'失败 '+(e.detail||'')}</td></tr>`).join('')||'<tr><td colspan=5 class="muted">暂无记录</td></tr>';
-}
-load();setInterval(load,15000);
-</script></body></html>"""
+from admin_ui import ADMIN_HTML, LOGIN_HTML  # noqa: E402
 
 
-@app.get("/admin", dependencies=[Depends(require_admin)])
-def admin_page() -> Response:
-    return Response(content=ADMIN_HTML, media_type="text/html; charset=utf-8")
+@app.get("/admin")
+def admin_page(request: Request) -> Response:
+    html = ADMIN_HTML if _is_admin_request(request) else LOGIN_HTML
+    return Response(content=html, media_type="text/html; charset=utf-8")
+
+
+# ---------------------------------------------------------------- 推荐源
+@app.get("/v1/recommended-feeds")
+def recommended_feeds() -> JSONResponse:
+    """公开端点：插件启动时拉取；仅返回启用项。无任何鉴权与标识。"""
+    data = _load_json(FEEDS_FILE, {"version": 0, "feeds": []})
+    feeds = [f for f in data.get("feeds", []) if f.get("enabled", True)]
+    return JSONResponse({"version": data.get("version", 0), "updatedAt": data.get("updatedAt"), "feeds": feeds})
+
+
+@app.get("/admin/api/feeds", dependencies=[Depends(require_admin)])
+def feeds_get() -> JSONResponse:
+    return JSONResponse(_load_json(FEEDS_FILE, {"version": 0, "feeds": []}))
+
+
+@app.put("/admin/api/feeds", dependencies=[Depends(require_admin)])
+def feeds_put(body: dict) -> JSONResponse:
+    feeds = body.get("feeds")
+    if not isinstance(feeds, list) or len(feeds) > 200:
+        raise HTTPException(status_code=400, detail="feeds 必须是列表（≤200）")
+    clean = []
+    for f in feeds:
+        url = str(f.get("url", ""))[:500]
+        if not url.startswith(("http://", "https://")):
+            raise HTTPException(status_code=400, detail=f"地址不合法：{url[:60]}")
+        clean.append({
+            "id": str(f.get("id", ""))[:40] or uuid.uuid4().hex[:8],
+            "name": str(f.get("name", ""))[:80],
+            "url": url,
+            "type": f.get("type") if f.get("type") in ("rss", "bilibili", "article") else "rss",
+            "group": str(f.get("group", ""))[:40],
+            "enabled": bool(f.get("enabled", True)),
+        })
+    with _STORE_LOCK:
+        old = _load_json(FEEDS_FILE, {"version": 0})
+        data = {"version": int(old.get("version", 0)) + 1,
+                "updatedAt": datetime.now(timezone.utc).isoformat(),
+                "feeds": clean}
+        _save_json(FEEDS_FILE, data)
+    return JSONResponse({"ok": True, "version": data["version"]})
+
+
+# ---------------------------------------------------------------- 公版内容库
+_SAFE_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
+_SAFE_NAME = re.compile(r"^[^/\\]{1,120}$")
+LIB_EXT = {".mp3", ".m4a", ".mp4", ".vtt", ".srt", ".txt"}
+
+
+def _lib_meta():
+    return _load_json(LIB_META, {"collections": []})
+
+
+def _lib_col(meta, cid):
+    for c in meta["collections"]:
+        if c["id"] == cid:
+            return c
+    raise HTTPException(status_code=404, detail="合集不存在")
+
+
+@app.get("/v1/library")
+def library_public() -> JSONResponse:
+    """公开端点：已发布的公版合集（内容为公有领域）。"""
+    meta = _lib_meta()
+    cols = [{k: c[k] for k in ("id", "title", "source", "level", "desc", "preview", "freeGen", "files")}
+            for c in meta["collections"] if c.get("published")]
+    return JSONResponse({"collections": cols})
+
+
+@app.get("/v1/library/{cid}/file/{name}")
+def library_file(cid: str, name: str):
+    if not _SAFE_ID.match(cid) or not _SAFE_NAME.match(name):
+        raise HTTPException(status_code=400, detail="bad path")
+    meta = _lib_meta()
+    col = _lib_col(meta, cid)
+    if not col.get("published"):
+        raise HTTPException(status_code=404, detail="合集未发布")
+    path = LIB_DIR / cid / name
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="文件不存在")
+    from fastapi.responses import FileResponse
+    return FileResponse(path)
+
+
+@app.get("/admin/api/library", dependencies=[Depends(require_admin)])
+def library_admin_list() -> JSONResponse:
+    meta = _lib_meta()
+    used = sum(f.stat().st_size for f in LIB_DIR.rglob("*") if f.is_file())
+    return JSONResponse({"collections": meta["collections"], "usedBytes": used})
+
+
+@app.post("/admin/api/library", dependencies=[Depends(require_admin)])
+def library_create(body: dict) -> JSONResponse:
+    title = str(body.get("title", "")).strip()[:80]
+    if not title:
+        raise HTTPException(status_code=400, detail="标题必填")
+    col = {"id": uuid.uuid4().hex[:10], "title": title,
+           "source": str(body.get("source", "")).strip()[:120],
+           "level": str(body.get("level", "B1"))[:8],
+           "desc": str(body.get("desc", ""))[:500],
+           "preview": True, "freeGen": False, "published": False,
+           "createdAt": datetime.now(timezone.utc).isoformat(), "files": []}
+    with _STORE_LOCK:
+        meta = _lib_meta()
+        meta["collections"].insert(0, col)
+        _save_json(LIB_META, meta)
+    (LIB_DIR / col["id"]).mkdir(parents=True, exist_ok=True)
+    return JSONResponse(col)
+
+
+@app.patch("/admin/api/library/{cid}", dependencies=[Depends(require_admin)])
+def library_patch(cid: str, body: dict) -> JSONResponse:
+    with _STORE_LOCK:
+        meta = _lib_meta()
+        col = _lib_col(meta, cid)
+        for k in ("title", "source", "level", "desc"):
+            if k in body:
+                col[k] = str(body[k])[:500]
+        for k in ("preview", "freeGen", "published"):
+            if k in body:
+                col[k] = bool(body[k])
+        _save_json(LIB_META, meta)
+    return JSONResponse(col)
+
+
+@app.delete("/admin/api/library/{cid}", dependencies=[Depends(require_admin)])
+def library_delete(cid: str) -> JSONResponse:
+    if not _SAFE_ID.match(cid):
+        raise HTTPException(status_code=400, detail="bad id")
+    with _STORE_LOCK:
+        meta = _lib_meta()
+        _lib_col(meta, cid)
+        meta["collections"] = [c for c in meta["collections"] if c["id"] != cid]
+        _save_json(LIB_META, meta)
+    shutil.rmtree(LIB_DIR / cid, ignore_errors=True)
+    return JSONResponse({"ok": True})
+
+
+@app.post("/admin/api/library/{cid}/files", dependencies=[Depends(require_admin)])
+async def library_upload(cid: str, files: list[UploadFile] = File(...)) -> JSONResponse:
+    if not _SAFE_ID.match(cid):
+        raise HTTPException(status_code=400, detail="bad id")
+    with _STORE_LOCK:
+        meta = _lib_meta()
+        col = _lib_col(meta, cid)
+    dest_dir = LIB_DIR / cid
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    added = []
+    for up in files[:50]:
+        name = Path(up.filename or "file").name[:120]
+        ext = Path(name).suffix.lower()
+        if ext not in LIB_EXT:
+            raise HTTPException(status_code=400, detail=f"不支持的格式：{name}")
+        dest = dest_dir / name
+        size = 0
+        with dest.open("wb") as out:
+            while chunk := await up.read(1 << 20):
+                size += len(chunk)
+                if size > 2 * 1024 ** 3:
+                    out.close()
+                    dest.unlink(missing_ok=True)
+                    raise HTTPException(status_code=413, detail=f"{name} 超过 2GB")
+                out.write(chunk)
+        added.append({"name": name, "size": size, "type": ext.lstrip(".")})
+    with _STORE_LOCK:
+        meta = _lib_meta()
+        col = _lib_col(meta, cid)
+        existing = {f["name"] for f in col["files"]}
+        col["files"] = [f for f in col["files"] if f["name"] not in {a["name"] for a in added}] + added
+        col["files"].sort(key=lambda f: f["name"])
+        _save_json(LIB_META, meta)
+    return JSONResponse({"ok": True, "added": added})

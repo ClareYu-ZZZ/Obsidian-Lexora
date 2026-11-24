@@ -58,6 +58,8 @@ export interface ElpSettings {
   updateCheckEnabled: boolean;
   telemetryEnabled: boolean;
   installId?: string;
+  /** 官方推荐源缓存（控制台维护，7 天有效）。 */
+  officialFeedsCache?: { at: number; feeds: Array<{ name: string; url: string; hint: string }> };
   lastUpdateCheckAt?: number;
   lastPingAt?: number;
   lastNotifiedVersion?: string;
