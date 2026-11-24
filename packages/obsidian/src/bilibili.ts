@@ -3,7 +3,7 @@
  * 全部请求发生在用户本机；SESSDATA（可选）只存本地 data.json，仅用于拉字幕。
  * 不做任何视频/音频下载——播放走 player.bilibili.com 官方内嵌。
  */
-import { requestUrl } from 'obsidian';
+import { Platform, requestUrl } from 'obsidian';
 import { md5 } from 'js-md5';
 import type { ParsedFeed } from '@elp/core';
 import type ElpPlugin from './main';
@@ -17,6 +17,34 @@ const MIXIN = [
   61, 26, 17, 0, 1, 60, 51, 30, 4, 22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11,
   36, 20, 34, 44, 52,
 ];
+
+interface BiliResp { status: number; text: string }
+
+/**
+ * 桌面端用 Node https 直连——完全绕开 Chromium 网络栈，
+ * 免疫 ERR_BLOCKED_BY_CLIENT 这类进程内拦截器；移动端回退 requestUrl。
+ */
+function biliGet(url: string, headers: Record<string, string>): Promise<BiliResp> {
+  const req = (window as Window & { require?: (m: string) => unknown }).require;
+  if (Platform.isDesktopApp && req) {
+    const https = req('https') as typeof import('https');
+    return new Promise((resolve, reject) => {
+      const r = https.get(url, { headers: { ...headers, 'accept-encoding': 'identity' }, timeout: 15000 }, (res) => {
+        if (res.statusCode && res.statusCode >= 301 && res.statusCode <= 308 && res.headers.location) {
+          biliGet(new URL(res.headers.location, url).toString(), headers).then(resolve, reject);
+          res.resume();
+          return;
+        }
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, text: Buffer.concat(chunks).toString('utf8') }));
+      });
+      r.on('timeout', () => { r.destroy(new Error('timeout')); });
+      r.on('error', reject);
+    });
+  }
+  return requestUrl({ url, headers, throw: false }).then((r) => ({ status: r.status, text: r.text }));
+}
 
 function safeJson(r: { text: string }): Record<string, unknown> | null {
   try {
@@ -37,11 +65,7 @@ let buvidCache: string | null = null;
 async function biliHeaders(plugin: ElpPlugin, withSession = true): Promise<Record<string, string>> {
   if (!buvidCache) {
     try {
-      const r = await requestUrl({
-        url: 'https://api.bilibili.com/x/frontend/finger/spi',
-        headers: { 'user-agent': UA },
-        throw: false,
-      });
+      const r = await biliGet('https://api.bilibili.com/x/frontend/finger/spi', { 'user-agent': UA });
       const j = safeJson(r) as { data?: { b_3?: string; b_4?: string } } | null;
       const d = j?.data;
       if (d?.b_3) buvidCache = `buvid3=${d.b_3}` + (d.b_4 ? `; buvid4=${d.b_4}` : '');
@@ -62,11 +86,7 @@ async function biliHeaders(plugin: ElpPlugin, withSession = true): Promise<Recor
 
 async function wbiKey(plugin: ElpPlugin): Promise<string> {
   if (wbiCache && Date.now() - wbiCache.at < 6 * 3600_000) return wbiCache.key;
-  const r = await requestUrl({
-    url: 'https://api.bilibili.com/x/web-interface/nav',
-    headers: await biliHeaders(plugin),
-    throw: false,
-  });
+  const r = await biliGet('https://api.bilibili.com/x/web-interface/nav', await biliHeaders(plugin));
   const j = safeJson(r) as { data?: { wbi_img?: { img_url: string; sub_url: string } } } | null;
   if (!j) { diag('nav', `HTML@${r.status}`); throw htmlBlockError(r.status); }
   diag('nav', 'ok');
@@ -110,11 +130,7 @@ const DM_PARAMS = {
 
 async function fetchByArcSearch(plugin: ElpPlugin, mid: string): Promise<ParsedFeed | null> {
   const q = await wbiSign(plugin, { mid, ps: 25, pn: 1, order: 'pubdate', ...DM_PARAMS });
-  const r = await requestUrl({
-    url: `https://api.bilibili.com/x/space/wbi/arc/search?${q}`,
-    headers: { ...(await biliHeaders(plugin)), referer: `https://space.bilibili.com/${mid}/video` },
-    throw: false,
-  });
+  const r = await biliGet(`https://api.bilibili.com/x/space/wbi/arc/search?${q}`, { ...(await biliHeaders(plugin)), referer: `https://space.bilibili.com/${mid}/video` });
   const j = safeJson(r) as {
     code?: number;
     data?: { list?: { vlist?: Array<{ bvid: string; title: string; created: number; pic?: string; author?: string; description?: string; length?: string }> } };
@@ -141,11 +157,7 @@ async function fetchByArcSearch(plugin: ElpPlugin, mid: string): Promise<ParsedF
 /** 兜底：动态流接口（风控阈值不同，常在 arc/search 被拦时仍可用）。 */
 async function fetchByDynamics(plugin: ElpPlugin, mid: string): Promise<ParsedFeed | null> {
   const q = await wbiSign(plugin, { host_mid: mid, offset: '', timezone_offset: -480 });
-  const r = await requestUrl({
-    url: `https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space?${q}`,
-    headers: { ...(await biliHeaders(plugin, true)), referer: `https://space.bilibili.com/${mid}/dynamic` },
-    throw: false,
-  });
+  const r = await biliGet(`https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space?${q}`, { ...(await biliHeaders(plugin, true)), referer: `https://space.bilibili.com/${mid}/dynamic` });
   const j = safeJson(r) as {
     code?: number;
     data?: { items?: Array<{ modules?: { module_author?: { name?: string; pub_ts?: number }; module_dynamic?: { major?: { archive?: { bvid?: string; title?: string; cover?: string; desc?: string; duration_text?: string } } } } }> };
@@ -191,11 +203,7 @@ export async function fetchSpaceFeed(plugin: ElpPlugin, mid: string): Promise<Pa
 }
 
 async function fetchCid(plugin: ElpPlugin, bvid: string): Promise<number> {
-  const r = await requestUrl({
-    url: `https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`,
-    headers: await biliHeaders(plugin),
-    throw: false,
-  });
+  const r = await biliGet(`https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`, await biliHeaders(plugin));
   const j = safeJson(r) as { code?: number; data?: { cid?: number } } | null;
   const cid = j?.data?.cid;
   if (!cid) throw new Error(`视频信息获取失败（${j?.code ?? r.status}）`);
@@ -213,11 +221,7 @@ function sec2ts(s: number): string {
 export async function fetchBiliSubtitleVtt(plugin: ElpPlugin, bvid: string): Promise<string | null> {
   const cid = await fetchCid(plugin, bvid);
   const q = await wbiSign(plugin, { bvid, cid });
-  const r = await requestUrl({
-    url: `https://api.bilibili.com/x/player/wbi/v2?${q}`,
-    headers: await biliHeaders(plugin, true),
-    throw: false,
-  });
+  const r = await biliGet(`https://api.bilibili.com/x/player/wbi/v2?${q}`, await biliHeaders(plugin, true));
   const j = safeJson(r) as { data?: { subtitle?: { subtitles?: Array<{ lan: string; subtitle_url?: string }> } } } | null;
   const subs: Array<{ lan: string; subtitle_url?: string }> = j?.data?.subtitle?.subtitles ?? [];
   const usable = subs.filter((s) => s.subtitle_url);
@@ -229,7 +233,7 @@ export async function fetchBiliSubtitleVtt(plugin: ElpPlugin, bvid: string): Pro
     usable[0];
   let url = pick.subtitle_url!;
   if (url.startsWith('//')) url = `https:${url}`;
-  const subRes = await requestUrl({ url, headers: await biliHeaders(plugin), throw: false });
+  const subRes = await biliGet(url, await biliHeaders(plugin));
   const subJson = safeJson(subRes) as { body?: Array<{ from: number; to: number; content: string }> } | null;
   const body: Array<{ from: number; to: number; content: string }> = subJson?.body ?? [];
   if (body.length === 0) return null;
