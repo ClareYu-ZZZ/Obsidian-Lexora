@@ -34,7 +34,7 @@ function htmlBlockError(status: number): Error {
 let wbiCache: { key: string; at: number } | null = null;
 let buvidCache: string | null = null;
 
-async function biliHeaders(plugin: ElpPlugin, withSession = false): Promise<Record<string, string>> {
+async function biliHeaders(plugin: ElpPlugin, withSession = true): Promise<Record<string, string>> {
   if (!buvidCache) {
     try {
       const r = await requestUrl({
@@ -45,13 +45,17 @@ async function biliHeaders(plugin: ElpPlugin, withSession = false): Promise<Reco
       const j = safeJson(r) as { data?: { b_3?: string; b_4?: string } } | null;
       const d = j?.data;
       if (d?.b_3) buvidCache = `buvid3=${d.b_3}` + (d.b_4 ? `; buvid4=${d.b_4}` : '');
-    } catch { /* 无 buvid 也先试 */ }
+    } catch { /* 下面兜底 */ }
+    if (!buvidCache) {
+      const rand = () => Math.random().toString(16).slice(2).toUpperCase();
+      buvidCache = `buvid3=${rand()}${rand()}${rand()}infoc`.slice(0, 48);
+    }
   }
   const cookies: string[] = [];
   if (buvidCache) cookies.push(buvidCache);
   const sess = plugin.settings.bilibiliSessdata?.trim();
   if (withSession && sess) cookies.push(`SESSDATA=${sess}`);
-  const h: Record<string, string> = { 'user-agent': UA, referer: 'https://www.bilibili.com/' };
+  const h: Record<string, string> = { 'user-agent': UA, referer: 'https://www.bilibili.com/', 'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8' };
   if (cookies.length) h.cookie = cookies.join('; ');
   return h;
 }
@@ -64,7 +68,8 @@ async function wbiKey(plugin: ElpPlugin): Promise<string> {
     throw: false,
   });
   const j = safeJson(r) as { data?: { wbi_img?: { img_url: string; sub_url: string } } } | null;
-  if (!j) throw htmlBlockError(r.status);
+  if (!j) { diag('nav', `HTML@${r.status}`); throw htmlBlockError(r.status); }
+  diag('nav', 'ok');
   const img = j.data?.wbi_img;
   if (!img?.img_url) throw new Error('wbi 密钥获取失败');
   const take = (u: string) => u.slice(u.lastIndexOf('/') + 1).split('.')[0];
@@ -114,9 +119,10 @@ async function fetchByArcSearch(plugin: ElpPlugin, mid: string): Promise<ParsedF
     code?: number;
     data?: { list?: { vlist?: Array<{ bvid: string; title: string; created: number; pic?: string; author?: string; description?: string; length?: string }> } };
   } | null;
-  if (!j || j.code !== 0) return null;
+  if (!j) { diag('arc', `HTML@${r.status}`); return null; }
+  if (j.code !== 0) { diag('arc', `code=${j.code}`); return null; }
   const vlist = j.data?.list?.vlist ?? [];
-  if (vlist.length === 0) return null;
+  if (vlist.length === 0) { diag('arc', 'empty'); return null; }
   return {
     title: vlist[0]?.author || `UP主 ${mid}`,
     kind: 'bilibili',
@@ -144,7 +150,8 @@ async function fetchByDynamics(plugin: ElpPlugin, mid: string): Promise<ParsedFe
     code?: number;
     data?: { items?: Array<{ modules?: { module_author?: { name?: string; pub_ts?: number }; module_dynamic?: { major?: { archive?: { bvid?: string; title?: string; cover?: string; desc?: string; duration_text?: string } } } } }> };
   } | null;
-  if (!j || j.code !== 0) return null;
+  if (!j) { diag('dyn', `HTML@${r.status}`); return null; }
+  if (j.code !== 0) { diag('dyn', `code=${j.code}`); return null; }
   const out: ParsedFeed = { title: '', kind: 'bilibili', items: [] };
   for (const it of j.data?.items ?? []) {
     const a = it.modules?.module_dynamic?.major?.archive;
@@ -166,13 +173,21 @@ async function fetchByDynamics(plugin: ElpPlugin, mid: string): Promise<ParsedFe
   return out;
 }
 
+export const biliDiag: string[] = [];
+
+export function diag(step: string, info: string): void {
+  biliDiag.push(`${step}:${info}`);
+  if (biliDiag.length > 8) biliDiag.shift();
+}
+
 /** UP 主最近投稿：投稿列表接口优先，动态流兜底。 */
 export async function fetchSpaceFeed(plugin: ElpPlugin, mid: string): Promise<ParsedFeed> {
-  const a = await fetchByArcSearch(plugin, mid).catch(() => null);
+  biliDiag.length = 0;
+  const a = await fetchByArcSearch(plugin, mid).catch((e: Error) => { diag('arc', e.message.slice(0, 60)); return null; });
   if (a) return a;
-  const b = await fetchByDynamics(plugin, mid).catch(() => null);
+  const b = await fetchByDynamics(plugin, mid).catch((e: Error) => { diag('dyn', e.message.slice(0, 60)); return null; });
   if (b) return b;
-  throw new Error('B 站接口被风控拦截（两条链路均失败）。稍后重试；设置 → Bilibili 填 SESSDATA 通常可解');
+  throw new Error(`B 站接口被风控拦截。诊断：${biliDiag.join(' | ') || '无'}。稍后重试或换网络`);
 }
 
 async function fetchCid(plugin: ElpPlugin, bvid: string): Promise<number> {
