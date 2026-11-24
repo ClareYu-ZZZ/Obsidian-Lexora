@@ -1,3 +1,4 @@
+import { bilibiliWatchUrl, fetchBiliSubtitleVtt, fetchSpaceFeed, parseBilibiliSpace } from './bilibili';
 import { cachedRecommended, refreshRecommended, renderLibrarySection } from './official';
 import { App, Modal, Notice, Setting, TFile, requestUrl, setIcon } from 'obsidian';
 import {
@@ -70,13 +71,20 @@ export class FeedsPanel {
     this.loading = true;
     this.render();
     try {
-      const res = await requestUrl({ url: feed.url, headers: { 'user-agent': 'Mozilla/5.0' }, throw: false });
-      let parsed: ParsedFeed | null = res.status < 400 ? parseFeed(res.text) : null;
-      // YouTube 的 videos.xml 端点时常 404：抓频道页兜底
-      if ((!parsed || parsed.items.length === 0) && feed.kind === 'youtube') {
-        parsed = await scrapeYoutubeChannel(feed.url);
+      let parsed: ParsedFeed | null = null;
+      if (feed.kind === 'bilibili') {
+        const mid = parseBilibiliSpace(feed.url);
+        if (!mid) throw new Error('识别不出 UP 主 ID');
+        parsed = await fetchSpaceFeed(this.plugin, mid);
+      } else {
+        const res = await requestUrl({ url: feed.url, headers: { 'user-agent': 'Mozilla/5.0' }, throw: false });
+        parsed = res.status < 400 ? parseFeed(res.text) : null;
+        // YouTube 的 videos.xml 端点时常 404：抓频道页兜底
+        if ((!parsed || parsed.items.length === 0) && feed.kind === 'youtube') {
+          parsed = await scrapeYoutubeChannel(feed.url);
+        }
+        if (!parsed) throw new Error(`HTTP ${res.status}`);
       }
-      if (!parsed) throw new Error(`HTTP ${res.status}`);
       this.items = parsed.items;
     } catch (e) {
       this.items = [];
@@ -151,6 +159,7 @@ export class FeedsPanel {
       body.createDiv({ cls: 'elp-card-title', text: item.title || '(无标题)' });
       const meta = body.createDiv({ cls: 'elp-card-meta' });
       if (item.videoId) meta.createSpan({ cls: 'elp-tag', text: '视频' });
+      else if (item.bvid) meta.createSpan({ cls: 'elp-tag', text: '视频' });
       else if (item.audioUrl) meta.createSpan({ cls: 'elp-tag', text: '音频' });
       if (item.published) meta.createSpan({ text: item.published.slice(0, 10) });
       else if (item.publishedText) meta.createSpan({ text: item.publishedText });
@@ -206,7 +215,7 @@ export class FeedsPanel {
     else if (item.publishedText) meta.createSpan({ text: item.publishedText });
     if (item.audioUrl) meta.createSpan({ cls: 'elp-tag', text: '含原声音频' });
 
-    if (item.videoId || item.audioUrl) {
+    if (item.videoId || item.bvid || item.audioUrl) {
       // 媒体封面 + 大播放键 → 在右侧播放器面板打开
       const mediaCard = body.createDiv({ cls: 'elp-reader-media' });
       if (item.image) mediaCard.style.backgroundImage = `url("${item.image.replace(/"/g, '%22')}")`;
@@ -216,7 +225,7 @@ export class FeedsPanel {
       setIcon(big.createSpan(), 'play');
       overlay.createDiv({
         cls: 'elp-reader-media-hint',
-        text: item.videoId ? '在右侧播放器中观看' : '在右侧播放器中收听',
+        text: item.videoId || item.bvid ? '在右侧播放器中观看' : '在右侧播放器中收听',
       });
       mediaCard.onclick = () => {
         void openPlayerPane(this.plugin).then((pane) => pane?.showMedia({
@@ -224,6 +233,7 @@ export class FeedsPanel {
           subtitle: feed?.name,
           cover: item.image,
           videoId: item.videoId,
+          bvid: item.bvid,
           audioUrl: item.audioUrl,
         }));
       };
@@ -273,6 +283,42 @@ export class FeedsPanel {
   }
 
   private async generate(feed: FeedConfig, item: FeedItem): Promise<void> {
+    if (item.bvid) {
+      const bvid = item.bvid;
+      const probing = new Notice('获取 B 站 CC 字幕…', 0);
+      const vtt = await fetchBiliSubtitleVtt(this.plugin, bvid).catch(() => null);
+      probing.hide();
+      if (vtt) {
+        await generateFromMedia(this.plugin, {
+          title: item.title,
+          media: { kind: 'bilibili', bvid },
+          subtitleText: vtt,
+          sourceUrl: bilibiliWatchUrl(bvid),
+          feedName: feed.name,
+          itemId: item.id,
+        });
+        this.render();
+        return;
+      }
+      new Notice(
+        '该视频没有可用的 CC 字幕' +
+        (this.plugin.settings.bilibiliSessdata ? '' : '（部分字幕需登录：设置 → Bilibili 填 SESSDATA 后重试）') +
+        '，也可手动选字幕文件',
+        8000,
+      );
+      new SubtitlePickModal(this.app, this.plugin, async (sub) => {
+        await generateFromMedia(this.plugin, {
+          title: item.title,
+          media: { kind: 'bilibili', bvid },
+          subtitleFile: sub,
+          sourceUrl: bilibiliWatchUrl(bvid),
+          feedName: feed.name,
+          itemId: item.id,
+        });
+        this.render();
+      }).open();
+      return;
+    }
     if (feed.kind === 'youtube' || item.videoId) {
       const videoId = item.videoId ?? (item.link ? extractVideoId(item.link) : null);
       if (!videoId) { new Notice('识别不出视频 ID'); return; }
@@ -476,6 +522,18 @@ class AddFeedModal extends Modal {
   private async addFeed(rawUrl: string, name?: string): Promise<boolean> {
     let url = rawUrl;
     try {
+      const mid = parseBilibiliSpace(rawUrl);
+      if (mid) {
+        const parsed = await fetchSpaceFeed(this.plugin, mid);
+        await this.plugin.feeds.add({
+          name: name || parsed.title,
+          url: `https://space.bilibili.com/${mid}`,
+          kind: 'bilibili',
+        });
+        new Notice(`已订阅：${name || parsed.title}（${parsed.items.length} 条）`);
+        this.onAdded();
+        return true;
+      }
       url = await resolveFeedUrl(rawUrl);
       const res = await requestUrl({ url, headers: { 'user-agent': 'Mozilla/5.0' }, throw: false });
       let parsed: ParsedFeed | null = res.status < 400 ? parseFeed(res.text) : null;
@@ -504,7 +562,7 @@ class AddFeedModal extends Modal {
     contentEl.createEl('h3', { text: '添加来源' });
     new Setting(contentEl)
       .setName('地址')
-      .setDesc('RSS/Atom 链接，或 YouTube 频道页 /channel/UC… 链接（自动转为订阅源）。')
+      .setDesc('RSS/Atom 链接、B 站 UP 主主页（space.bilibili.com/…），或 YouTube 频道页 /channel/UC… 链接。')
       .addText((t) => t.setPlaceholder('https://…').onChange((v) => { this.url = v.trim(); }));
     new Setting(contentEl)
       .setName('名称（可选）')

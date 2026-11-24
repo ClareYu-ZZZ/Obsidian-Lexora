@@ -208,7 +208,22 @@ interface YoutubeBackend {
 type MediaBackend =
   | { kind: 'local'; el: HTMLMediaElement }
   | YoutubeBackend
+  | BilibiliBackend
   | { kind: 'tts' };
+
+/** B 站官方内嵌播放器没有 JS 控制 API：跳转靠带 t 参数重载 iframe，
+ *  无法上报播放进度，因此区间自动停止不可用（手动暂停）。 */
+interface BilibiliBackend {
+  kind: 'bilibili';
+  iframe: HTMLIFrameElement;
+  bvid: string;
+  lastTime: number;
+}
+
+
+function biliEmbedSrc(bvid: string, t: number, autoplay: boolean): string {
+  return `https://player.bilibili.com/player.html?bvid=${bvid}&page=1&high_quality=1&danmaku=0&autoplay=${autoplay ? 1 : 0}&t=${Math.max(0, Math.floor(t))}`;
+}
 
 export class PlayerController {
   private backend: MediaBackend;
@@ -274,6 +289,19 @@ export class PlayerController {
 
   private buildMedia(root: HTMLElement): MediaBackend {
     const media = this.data.media;
+    if (media?.kind === 'bilibili' && media.bvid) {
+      const wrap = root.createDiv({ cls: 'elp-player-video' });
+      const iframe = wrap.createEl('iframe', {
+        attr: {
+          src: biliEmbedSrc(media.bvid, 0, false),
+          frameborder: '0',
+          allow: 'autoplay; encrypted-media',
+          allowfullscreen: 'true',
+          scrolling: 'no',
+        },
+      });
+      return { kind: 'bilibili', iframe, bvid: media.bvid, lastTime: 0 };
+    }
     if (media?.kind === 'youtube' && media.videoId) {
       const wrap = root.createDiv({ cls: 'elp-player-video' });
       const origin = encodeURIComponent(window.location.origin || 'app://obsidian.md');
@@ -354,7 +382,7 @@ export class PlayerController {
 
   /** 是否有可见画面（YouTube iframe 或本地视频）。 */
   hasVideo(): boolean {
-    if (this.backend.kind === 'youtube') return true;
+    if (this.backend.kind === 'youtube' || this.backend.kind === 'bilibili') return true;
     return this.backend.kind === 'local' && this.backend.el.tagName === 'VIDEO';
   }
 
@@ -374,6 +402,7 @@ export class PlayerController {
   private now(): number {
     if (this.backend.kind === 'local') return this.backend.el.currentTime;
     if (this.backend.kind === 'youtube') return this.backend.lastTime;
+    if (this.backend.kind === 'bilibili') return this.backend.lastTime;
     return 0;
   }
 
@@ -382,6 +411,9 @@ export class PlayerController {
       this.backend.el.currentTime = t;
       this.backend.el.playbackRate = this.rate;
       void this.backend.el.play();
+    } else if (this.backend.kind === 'bilibili') {
+      this.backend.lastTime = t;
+      this.backend.iframe.src = biliEmbedSrc(this.backend.bvid, t, true);
     } else if (this.backend.kind === 'youtube') {
       this.yt('seekTo', [t, true]);
       this.yt('setPlaybackRate', [this.rate]);
@@ -393,6 +425,7 @@ export class PlayerController {
   private pause(): void {
     if (this.backend.kind === 'local') this.backend.el.pause();
     else if (this.backend.kind === 'youtube') this.yt('pauseVideo');
+    else if (this.backend.kind === 'bilibili') this.backend.iframe.src = biliEmbedSrc(this.backend.bvid, this.backend.lastTime, false);
     this.setPlayIcon(false);
   }
 

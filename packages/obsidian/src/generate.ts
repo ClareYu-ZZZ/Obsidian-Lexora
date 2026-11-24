@@ -350,7 +350,7 @@ export async function generateFromMedia(
     const data = buildLessonData({
       title: args.title,
       source: {
-        kind: args.media.kind === 'youtube' ? 'youtube' : 'local-media',
+        kind: args.media.kind === 'youtube' ? 'youtube' : args.media.kind === 'bilibili' ? 'bilibili' : 'local-media',
         url: args.sourceUrl,
         feedName: args.feedName,
       },

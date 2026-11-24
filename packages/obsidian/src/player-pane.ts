@@ -19,6 +19,7 @@ export interface PaneMedia {
   subtitle?: string;
   cover?: string;
   videoId?: string;
+  bvid?: string;
   audioUrl?: string;
 }
 
@@ -70,6 +71,21 @@ export class PlayerPaneView extends ItemView {
   showMedia(media: PaneMedia): void {
     const inner = this.reset();
 
+    if (media.bvid) {
+      const wrap = inner.createDiv({ cls: 'elp-player-video' });
+      wrap.createEl('iframe', {
+        attr: {
+          src: `https://player.bilibili.com/player.html?bvid=${media.bvid}&page=1&high_quality=1&danmaku=0&autoplay=1`,
+          frameborder: '0',
+          allow: 'autoplay; encrypted-media; picture-in-picture',
+          allowfullscreen: 'true',
+          scrolling: 'no',
+        },
+      });
+      inner.createDiv({ cls: 'elp-pane-title', text: media.title });
+      if (media.subtitle) inner.createDiv({ cls: 'elp-pane-sub', text: media.subtitle });
+      return;
+    }
     if (media.videoId) {
       const wrap = inner.createDiv({ cls: 'elp-player-video' });
       wrap.createEl('iframe', {

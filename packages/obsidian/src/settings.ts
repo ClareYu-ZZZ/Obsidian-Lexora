@@ -58,6 +58,8 @@ export interface ElpSettings {
   updateCheckEnabled: boolean;
   telemetryEnabled: boolean;
   installId?: string;
+  /** Bilibili SESSDATA（可选，仅用于拉取 CC 字幕；部分字幕需登录可见）。 */
+  bilibiliSessdata?: string;
   /** 官方推荐源缓存（控制台维护，7 天有效）。 */
   officialFeedsCache?: { at: number; feeds: Array<{ name: string; url: string; hint: string }> };
   lastUpdateCheckAt?: number;
@@ -160,6 +162,19 @@ export class ElpSettingTab extends PluginSettingTab {
         new Notice(st.tier === 'pro' ? 'Pro 已激活 ✓' : (st.keyError ?? '未激活'));
         this.display();
       }));
+
+    new Setting(containerEl).setName('Bilibili').setHeading();
+    new Setting(containerEl)
+      .setName('SESSDATA（可选）')
+      .setDesc('仅用于获取 CC 字幕（B 站部分字幕需登录可见）。浏览器登录 bilibili.com 后从 Cookie 中复制；只保存在本机，不会发送到任何第三方。')
+      .addText((t) => {
+        t.setValue(this.plugin.settings.bilibiliSessdata ?? '').onChange(async (v) => {
+          this.plugin.settings.bilibiliSessdata = v.trim();
+          await this.plugin.saveSettings();
+        });
+        t.inputEl.type = 'password';
+        t.inputEl.style.width = '240px';
+      });
 
     new Setting(containerEl).setName('词典').setHeading();
 

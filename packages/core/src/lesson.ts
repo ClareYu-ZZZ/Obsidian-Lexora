@@ -7,8 +7,9 @@ import { makeId } from './books';
 export const LESSON_NOTE_NAME = '学习笔记.md';
 
 export interface LessonMedia {
-  kind: 'youtube' | 'local' | 'remote';
+  kind: 'youtube' | 'bilibili' | 'local' | 'remote';
   videoId?: string;
+  bvid?: string;
   /** vault-relative path of a local media file */
   path?: string;
   /** streaming URL for kind 'remote'（如 RSS enclosure 原声） */
@@ -36,7 +37,7 @@ export interface LessonData {
   id: string;
   title: string;
   createdAt: string;
-  source: { kind: 'article' | 'youtube' | 'local-media' | 'note'; url?: string; feedName?: string };
+  source: { kind: 'article' | 'youtube' | 'bilibili' | 'local-media' | 'note'; url?: string; feedName?: string };
   media?: LessonMedia;
   segments: LessonSegment[];
   words: LessonWordSnap[];
@@ -185,12 +186,13 @@ export function lessonMarkdown(data: LessonData): string {
   L.push(`lexora-lesson: ${data.id}`);
   L.push(`title: "${data.title.replace(/"/g, "'")}"`);
   if (data.source.url) {
-    L.push(data.source.kind === 'youtube' ? `video: ${data.source.url}` : `source: "${data.source.url}"`);
+    L.push(data.source.kind === 'youtube' || data.source.kind === 'bilibili' ? `video: ${data.source.url}` : `source: "${data.source.url}"`);
   }
   if (data.source.feedName) L.push(`creator: "${data.source.feedName.replace(/"/g, "'")}"`);
   L.push('tags:');
   L.push('  - english/lesson');
   if (data.source.kind === 'youtube') L.push('  - english/youtube');
+  if (data.source.kind === 'bilibili') L.push('  - english/bilibili');
   L.push(`new_words: ${data.words.length}`);
   L.push(`hard_sentences: ${data.hard.length}`);
   if (duration) L.push(`duration: ${duration}`);

@@ -18,6 +18,7 @@ export interface FeedItem {
   link: string;
   published?: string;     // ISO
   videoId?: string;       // YouTube only
+  bvid?: string;          // Bilibili only
   summary?: string;       // plain-ish text
   contentHtml?: string;   // full html when the feed carries it
   /** Episode audio (RSS enclosure / media:content), e.g. BBC 6 Minute mp3. */
@@ -44,7 +45,7 @@ function imageOf(itemXml: string, videoId?: string, contentHtml?: string): strin
   return undefined;
 }
 
-export type FeedKind = 'youtube' | 'article';
+export type FeedKind = 'youtube' | 'bilibili' | 'article';
 
 export interface ParsedFeed {
   title: string;
