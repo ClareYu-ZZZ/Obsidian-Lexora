@@ -230,17 +230,21 @@ function biliEmbedSrc(b: BilibiliBackend, t: number, autoplay: boolean): string 
   return `https://player.bilibili.com/player.html?bvid=${b.bvid}${cid}&page=1&high_quality=1&danmaku=0&autoplay=${autoplay ? 1 : 0}&t=${Math.max(0, Math.floor(t))}`;
 }
 
+/** 播放器页面 load 之后到真正出声的初始化+缓冲延迟（经验值，时钟据此滞后起算）。 */
+const BILI_STARTUP_LAG_MS = 1100;
+
 function biliNow(b: BilibiliBackend): number {
   if (!b.playing || b.baseAt === 0) return b.lastTime;
-  return b.lastTime + (Date.now() - b.baseAt) / 1000;
+  return b.lastTime + Math.max(0, Date.now() - b.baseAt) / 1000;
 }
 
 function biliLoad(b: BilibiliBackend, t: number, autoplay: boolean): void {
-  b.lastTime = t;
+  // embed 的 t 只收整数秒：时钟必须与 URL 同步取整，否则凭空领先最多 1 秒
+  b.lastTime = Math.max(0, Math.floor(t));
   b.playing = autoplay;
   b.baseAt = 0;
-  b.iframe.onload = () => { b.baseAt = Date.now(); };
-  b.iframe.src = biliEmbedSrc(b, t, autoplay);
+  b.iframe.onload = () => { b.baseAt = Date.now() + BILI_STARTUP_LAG_MS; };
+  b.iframe.src = biliEmbedSrc(b, b.lastTime, autoplay);
 }
 
 export class PlayerController {
