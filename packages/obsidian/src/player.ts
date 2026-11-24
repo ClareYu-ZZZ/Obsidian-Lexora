@@ -4,7 +4,7 @@ import { fmtTime, paraRanges } from '@elp/core';
 import type ElpPlugin from './main';
 import { iconButton } from './ui';
 import { pronounce, stopPronounce } from './audio';
-import { fetchBiliStream } from './bilibili';
+import { downloadBiliStream } from './bilibili';
 import { openPlayerPane } from './player-pane';
 
 export async function loadLessonData(plugin: ElpPlugin, mdPath: string): Promise<LessonData | null> {
@@ -433,39 +433,33 @@ export class PlayerController {
     return { kind: 'tts' };
   }
 
-  /** B 站原生流升级：playurl(html5 mp4) 直喂 <video>，与本地视频同级的精确控制，
-   *  模拟时钟随之退役。获取失败（风控/地区/版权）保持官方 iframe；
-   *  流地址有时效，播放中 error 先重取一次，再失败回退 iframe。 */
+  /** B 站原生流升级：playurl 直链经 Node 通道下载到本地缓存后用 <video> 播放——
+   *  与本地视频同级的毫秒定位/区间自动停/倍速，且免疫 Chromium 进程内拦截器。
+   *  下载期间官方 iframe 照常可用，完成后无感切换并续播当前进度；失败保持 iframe。 */
   private async upgradeBili(wrap: HTMLElement, old: BilibiliBackend, bvid: string, cid?: number): Promise<void> {
+    const badge = wrap.createDiv({ cls: 'elp-bili-loading', text: '高精度视频流载入中…' });
     try {
-      const { url } = await fetchBiliStream(this.plugin, bvid, cid);
+      const rel = await downloadBiliStream(this.plugin, bvid, cid, (pct) => {
+        badge.setText(`高精度视频流载入中 ${pct}%`);
+      });
       if (this.backend !== old) return; // 面板已重建
       const el = wrap.createEl('video', {
         attr: { preload: 'metadata', playsinline: 'true', 'webkit-playsinline': 'true' },
       });
-      el.src = url;
-      let retried = false;
-      el.onerror = () => {
-        void (async () => {
-          if (!retried) {
-            retried = true;
-            try {
-              const t = el.currentTime;
-              el.src = (await fetchBiliStream(this.plugin, bvid, cid)).url;
-              el.currentTime = t;
-              return;
-            } catch { /* 下面回退 */ }
-          }
-          if (this.backend.kind === 'local' && this.backend.el === el) {
-            el.remove();
-            old.iframe.style.display = '';
-            this.backend = old;
-          }
-        })();
-      };
+      el.src = this.plugin.app.vault.adapter.getResourcePath(rel);
+      const resume = old.playing ? biliNow(old) : old.lastTime;
+      el.addEventListener('loadedmetadata', () => {
+        el.currentTime = resume;
+        if (old.playing) { el.playbackRate = this.rate; void el.play(); }
+      }, { once: true });
+      old.iframe.src = 'about:blank';
       old.iframe.style.display = 'none';
       this.backend = { kind: 'local', el };
-    } catch { /* 保持 iframe 嵌入 */ }
+    } catch (e) {
+      console.warn('[lexora] B 站原生流不可用，保持官方嵌入播放：', e);
+    } finally {
+      badge.remove();
+    }
   }
 
   /** 是否有可见画面（YouTube iframe 或本地视频）。 */

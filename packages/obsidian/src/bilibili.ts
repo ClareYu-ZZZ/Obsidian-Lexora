@@ -229,6 +229,73 @@ export async function fetchBiliStream(plugin: ElpPlugin, bvid: string, cid?: num
   return { url, cid: c };
 }
 
+/** 把 html5 直链流经 Node 通道下载到插件缓存（彻底绕开 Chromium 网络栈——
+ *  直链给 <video> 会被进程内拦截器挡掉，和 API 被拦是同一个元凶）。
+ *  返回 vault 相对路径；按 bvid-cid 命中缓存；目录超 2GB 时淘汰最旧。 */
+export async function downloadBiliStream(
+  plugin: ElpPlugin, bvid: string, cid: number | undefined,
+  onProgress?: (pct: number) => void,
+): Promise<string> {
+  const req = (window as Window & { require?: (m: string) => unknown }).require;
+  if (!Platform.isDesktopApp || !req) throw new Error('仅桌面端支持原生流');
+  const fs = req('fs') as typeof import('fs');
+  const pathMod = req('path') as typeof import('path');
+  const https = req('https') as typeof import('https');
+  const adapter = plugin.app.vault.adapter as { getBasePath?: () => string };
+  const base = adapter.getBasePath?.();
+  if (!base) throw new Error('无法定位 vault 路径');
+
+  const { url, cid: c } = await fetchBiliStream(plugin, bvid, cid);
+  const rel = `${plugin.manifest.dir}/stream-cache/${bvid}-${c}.mp4`;
+  const abs = pathMod.join(base, ...rel.split('/'));
+  try { if (fs.statSync(abs).size > 0) return rel; } catch { /* 未命中 */ }
+  await fs.promises.mkdir(pathMod.dirname(abs), { recursive: true });
+
+  // LRU 淘汰：缓存目录超 2GB 删最旧
+  try {
+    const d = pathMod.dirname(abs);
+    const files = fs.readdirSync(d)
+      .map((n) => { const st = fs.statSync(pathMod.join(d, n)); return { n, size: st.size, at: st.mtimeMs }; });
+    let total = files.reduce((a, f) => a + f.size, 0);
+    for (const f of files.sort((a, b) => a.at - b.at)) {
+      if (total <= 2 * 1024 ** 3) break;
+      try { fs.unlinkSync(pathMod.join(d, f.n)); total -= f.size; } catch { /* 忽略 */ }
+    }
+  } catch { /* 忽略 */ }
+
+  const headers = { ...(await biliHeaders(plugin, false)), referer: 'https://www.bilibili.com/', 'accept-encoding': 'identity' };
+  const tmp = abs + '.part';
+  await new Promise<void>((resolve, reject) => {
+    const get = (u: string, hops: number): void => {
+      const r = https.get(u, { headers, timeout: 30000 }, (res) => {
+        if (res.statusCode && res.statusCode >= 301 && res.statusCode <= 308 && res.headers.location && hops < 4) {
+          res.resume(); get(new URL(res.headers.location, u).toString(), hops + 1); return;
+        }
+        if (!res.statusCode || res.statusCode >= 400) {
+          res.resume(); reject(new Error(`流下载失败 HTTP ${res.statusCode ?? '?'}`)); return;
+        }
+        const totalLen = Number(res.headers['content-length'] ?? 0);
+        if (totalLen > 1.5 * 1024 ** 3) { res.resume(); reject(new Error('视频过大，保持在线播放')); return; }
+        const ws = fs.createWriteStream(tmp);
+        let got = 0;
+        res.on('data', (chk: Buffer) => {
+          got += chk.length;
+          if (totalLen && onProgress) onProgress(Math.min(99, Math.round((got / totalLen) * 100)));
+        });
+        res.pipe(ws);
+        ws.on('finish', resolve);
+        ws.on('error', reject);
+        res.on('error', reject);
+      });
+      r.on('timeout', () => { r.destroy(new Error('timeout')); });
+      r.on('error', reject);
+    };
+    get(url, 0);
+  });
+  fs.renameSync(tmp, abs);
+  return rel;
+}
+
 /** 拉 CC 字幕并转 VTT（cid 一并返回，供内嵌播放器精确定位）。英文轨优先，人工轨优先于 AI 轨。 */
 export async function fetchBiliSubtitle(plugin: ElpPlugin, bvid: string): Promise<{ cid: number; vtt: string | null }> {
   const cid = await fetchCid(plugin, bvid);

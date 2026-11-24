@@ -1492,6 +1492,7 @@ body.elp-style-background .elp-word {
 
 
 /* ---- 学习笔记悬浮进度环 ---- */
+.elp-ring-anchor { position: relative; }
 .elp-ring-host { position: absolute; right: 22px; bottom: 22px; z-index: 40; cursor: pointer; }
 .elp-ring {
   width: 64px; height: 64px; border-radius: 50%;
@@ -1508,3 +1509,13 @@ body.elp-style-background .elp-word {
 .elp-ring-pct { font-size: 14px; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
 .elp-ring.is-full .elp-ring-pct { color: var(--interactive-accent); }
 .elp-ring-sub { font-size: 9px; color: var(--text-muted); }
+
+
+/* B 站流下载进度角标 */
+.elp-player-video { position: relative; }
+.elp-bili-loading {
+  position: absolute; top: 8px; right: 8px; z-index: 5;
+  padding: 3px 10px; border-radius: 999px;
+  font-size: 11px; color: #fff; background: rgba(0, 0, 0, 0.65);
+  pointer-events: none;
+}

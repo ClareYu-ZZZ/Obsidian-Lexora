@@ -7,14 +7,11 @@ import type ElpPlugin from './main';
 
 const HOST_CLS = 'elp-ring-host';
 
-function isLessonNote(plugin: ElpPlugin, f: TFile | null): f is TFile {
-  return !!f && f.name === '学习笔记.md' && f.path.startsWith(`${plugin.settings.lessonsFolder}/`);
-}
-
 async function render(plugin: ElpPlugin): Promise<void> {
   document.querySelectorAll(`.${HOST_CLS}`).forEach((e) => e.remove());
   const view = plugin.app.workspace.getActiveViewOfType(MarkdownView);
-  if (!view || !isLessonNote(plugin, view.file)) return;
+  // 内容驱动：任何含跟读打卡项的笔记都显示进度环（不依赖目录/文件名）
+  if (!view?.file || !(view.file instanceof TFile)) return;
   const text = await plugin.app.vault.cachedRead(view.file);
   let checked = 0;
   let total = 0;
@@ -26,6 +23,7 @@ async function render(plugin: ElpPlugin): Promise<void> {
   if (total === 0) return;
   const pct = Math.round((checked / total) * 100);
 
+  view.containerEl.addClass('elp-ring-anchor');
   const host = view.containerEl.createDiv({ cls: HOST_CLS });
   host.setAttribute('aria-label', `跟读打卡 ${checked}/${total}，点击跳到下一个未完成项`);
   const ring = host.createDiv({ cls: 'elp-ring' + (pct >= 100 ? ' is-full' : '') });
