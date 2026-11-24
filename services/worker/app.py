@@ -948,8 +948,10 @@ def feeds_put(body: dict) -> JSONResponse:
             "id": str(f.get("id", ""))[:40] or uuid.uuid4().hex[:8],
             "name": str(f.get("name", ""))[:80],
             "url": url,
-            "type": f.get("type") if f.get("type") in ("rss", "bilibili", "article") else "rss",
+            "type": f.get("type") if f.get("type") in ("rss", "bilibili", "article", "youtube") else "rss",
             "group": str(f.get("group", ""))[:40],
+            # region: cn=国内直连 / global=境外（插件按用户网络探测决定是否展示）
+            "region": f.get("region") if f.get("region") in ("cn", "global") else ("global" if "youtube" in url else "cn"),
             "enabled": bool(f.get("enabled", True)),
         })
     with _STORE_LOCK:

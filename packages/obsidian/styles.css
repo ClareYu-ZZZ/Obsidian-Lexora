@@ -1535,3 +1535,6 @@ body.elp-style-background .elp-word {
 }
 .elp-ts-scrollbox .elp-ts-sent.is-past { opacity: 0.38; }
 .elp-ts-scrollbox .elp-ts-sent.is-past:hover { opacity: 0.85; }
+
+/* 订阅中心：境外源提示行 */
+.elp-preset-note { flex-basis: 100%; font-size: 12px; color: var(--text-muted); padding: 2px 4px; }

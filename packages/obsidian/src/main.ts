@@ -1,5 +1,6 @@
 import { LicenseManager } from './license';
 import { setupProgressRing } from './progress-ring';
+import { probeOverseas } from './yt-net';
 import { checkForUpdate, sendTelemetryPing } from './telemetry';
 import { MarkdownView, Notice, Plugin, WorkspaceLeaf, addIcon } from 'obsidian';
 import type { EditorView } from '@codemirror/view';
@@ -52,6 +53,7 @@ export default class ElpPlugin extends Plugin {
     this.license = new LicenseManager(this);
     void this.license.refresh();
     setupProgressRing(this);
+    void probeOverseas(this); // 静默探测境外直连，订阅中心据此展示/隐藏境外源
     // 延迟到启动稳定后再做更新检查与匿名统计（都可在设置关闭，且各自节流）
     window.setTimeout(() => {
       void checkForUpdate(this);

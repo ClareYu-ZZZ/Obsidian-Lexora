@@ -2,6 +2,7 @@ import { cutWorksheet } from './article-clean';
 import { bilibiliWatchUrl, fetchBiliSubtitle, fetchSpaceFeed, parseBilibiliSpace } from './bilibili';
 import { cachedRecommended, refreshRecommended, renderLibrarySection } from './official';
 import { App, Modal, Notice, Setting, TFile, requestUrl, setIcon } from 'obsidian';
+import { overseasState, probeOverseas, ytGet } from './yt-net';
 import {
   extractVideoId, htmlToText, normalizeFeedUrl, parseFeed, parseYoutubeChannelPage, youtubeWatchUrl,
   type FeedConfig, type FeedItem, type ParsedFeed,
@@ -78,11 +79,13 @@ export class FeedsPanel {
         if (!mid) throw new Error('识别不出 UP 主 ID');
         parsed = await fetchSpaceFeed(this.plugin, mid);
       } else {
-        const res = await requestUrl({ url: feed.url, headers: { 'user-agent': 'Mozilla/5.0' }, throw: false });
+        const res = feed.kind === 'youtube'
+          ? await ytGet(this.plugin, feed.url)
+          : await requestUrl({ url: feed.url, headers: { 'user-agent': 'Mozilla/5.0' }, throw: false });
         parsed = res.status < 400 ? parseFeed(res.text) : null;
         // YouTube 的 videos.xml 端点时常 404：抓频道页兜底
         if ((!parsed || parsed.items.length === 0) && feed.kind === 'youtube') {
-          parsed = await scrapeYoutubeChannel(feed.url);
+          parsed = await scrapeYoutubeChannel(this.plugin, feed.url);
         }
         if (!parsed) throw new Error(`HTTP ${res.status}`);
       }
@@ -463,18 +466,14 @@ const PRESET_FEEDS: Array<{ name: string; url: string; hint: string }> = [
 
 
 /** videos.xml 不可用时的兜底链：官方频道页抓取 → Invidious 镜像 feed。 */
-async function scrapeYoutubeChannel(feedUrl: string): Promise<ParsedFeed | null> {
+async function scrapeYoutubeChannel(plugin: ElpPlugin, feedUrl: string): Promise<ParsedFeed | null> {
   const m = feedUrl.match(/channel_id=(UC[\w-]{10,})/);
   if (!m) return null;
   const id = m[1];
 
   // 1) 官方频道 /videos 页
   try {
-    const res = await requestUrl({
-      url: `https://www.youtube.com/channel/${id}/videos?hl=en`,
-      headers: { 'user-agent': 'Mozilla/5.0', 'accept-language': 'en-US,en' },
-      throw: false,
-    });
+    const res = await ytGet(plugin, `https://www.youtube.com/channel/${id}/videos?hl=en`);
     if (res.status < 400) {
       const parsed = parseYoutubeChannelPage(res.text);
       if (parsed.items.length > 0) return parsed;
@@ -484,11 +483,7 @@ async function scrapeYoutubeChannel(feedUrl: string): Promise<ParsedFeed | null>
   // 2) Invidious 镜像的 Atom feed（条目带 yt:videoId，封面用官方缩略图）
   for (const base of INVIDIOUS_MIRRORS) {
     try {
-      const res = await requestUrl({
-        url: `${base}/feed/channel/${id}`,
-        headers: { 'user-agent': 'Mozilla/5.0' },
-        throw: false,
-      });
+      const res = await ytGet(plugin, `${base}/feed/channel/${id}`);
       if (res.status < 400) {
         const parsed = parseFeed(res.text);
         if (parsed.items.length > 0) return { ...parsed, kind: 'youtube' };
@@ -499,11 +494,11 @@ async function scrapeYoutubeChannel(feedUrl: string): Promise<ParsedFeed | null>
 }
 
 /** @handle / /c/ / /user/ 形式的 YouTube 链接：抓页面解析出 channel_id。 */
-async function resolveFeedUrl(input: string): Promise<string> {
+async function resolveFeedUrl(plugin: ElpPlugin, input: string): Promise<string> {
   const n = normalizeFeedUrl(input);
   if (n !== input) return n;
   if (/youtube\.com\/(@|c\/|user\/)/.test(input)) {
-    const res = await requestUrl({ url: input, headers: { 'user-agent': 'Mozilla/5.0' } });
+    const res = await ytGet(plugin, input);
     const m = res.text.match(/"channelId":"(UC[\w-]{10,})"/)
       ?? res.text.match(/channel_id=(UC[\w-]{10,})/);
     if (m) return `https://www.youtube.com/feeds/videos.xml?channel_id=${m[1]}`;
@@ -536,13 +531,15 @@ class AddFeedModal extends Modal {
         this.onAdded();
         return true;
       }
-      url = await resolveFeedUrl(rawUrl);
-      const res = await requestUrl({ url, headers: { 'user-agent': 'Mozilla/5.0' }, throw: false });
+      url = await resolveFeedUrl(this.plugin, rawUrl);
+      const res = /youtube\.com/.test(url)
+        ? await ytGet(this.plugin, url)
+        : await requestUrl({ url, headers: { 'user-agent': 'Mozilla/5.0' }, throw: false });
       let parsed: ParsedFeed | null = res.status < 400 ? parseFeed(res.text) : null;
       if (parsed && parsed.items.length === 0 && !parsed.title) parsed = null;
       // YouTube RSS 端点 404 → 抓频道页验证并取标题
       if (!parsed && /youtube\.com\/feeds\/videos\.xml/.test(url)) {
-        parsed = await scrapeYoutubeChannel(url);
+        parsed = await scrapeYoutubeChannel(this.plugin, url);
       }
       if (!parsed) throw new Error(`HTTP ${res.status}`);
       await this.plugin.feeds.add({
@@ -585,8 +582,20 @@ class AddFeedModal extends Modal {
     const existingUrls = new Set(this.plugin.feeds.list().map((f) => f.url));
     const existingNames = new Set(this.plugin.feeds.list().map((f) => f.name.toLowerCase()));
     // 远端清单（控制台「推荐源」页维护，缓存 7 天）优先；拉不到回退内置
-    const presets = cachedRecommended(this.plugin) ?? PRESET_FEEDS;
+    const all = cachedRecommended(this.plugin) ?? PRESET_FEEDS;
     void refreshRecommended(this.plugin);
+    // 境外源（YouTube 等）仅在本机网络可直连时展示；探测结果 30 分钟缓存
+    const isOverseas = (f: { url: string; hint: string; region?: string }): boolean =>
+      f.region === 'global' || (f.region !== 'cn' && /youtube\.com|youtu\.be/.test(f.url));
+    const ok = overseasState();
+    const presets = all.filter((f) => ok === true || !isOverseas(f));
+    if (presets.length < all.length) {
+      recWrap.createDiv({
+        cls: 'elp-preset-note',
+        text: ok === null ? '正在检测 YouTube 直连…可用时将显示境外源' : '已隐藏境外源（当前网络无法直连 YouTube；设置页可重新检测）',
+      });
+      if (ok === null) void probeOverseas(this.plugin).then(() => { if (this.contentEl.isConnected) { this.contentEl.empty(); this.onOpen(); } });
+    }
     for (const p of presets) {
       const chip = recWrap.createEl('button', { cls: 'elp-preset' });
       chip.createSpan({ cls: 'elp-preset-name', text: p.name });

@@ -4,7 +4,7 @@
  * 纯 HTTP，不依赖 yt-dlp。
  */
 
-import { requestUrl } from 'obsidian';
+import { ytGet } from './yt-net';
 import { extractEmbeddedJson } from '@elp/core';
 import type ElpPlugin from './main';
 
@@ -22,12 +22,10 @@ interface PlayerResponse {
 
 export const INVIDIOUS_MIRRORS = ['https://yewtu.be', 'https://inv.nadeko.net', 'https://invidious.nerdvpn.de'];
 
-const UA = { 'user-agent': 'Mozilla/5.0', 'accept-language': 'en-US,en' };
-
 /** 路线一：官方 watch 页的 captionTracks（新视频的链接常被 pot 校验拦成空响应）。 */
-async function fromWatchPage(videoId: string): Promise<string | null> {
+async function fromWatchPage(plugin: ElpPlugin, videoId: string): Promise<string | null> {
   try {
-    const page = await requestUrl({ url: `https://www.youtube.com/watch?v=${videoId}&hl=en`, headers: UA, throw: false });
+    const page = await ytGet(plugin, `https://www.youtube.com/watch?v=${videoId}&hl=en`);
     if (page.status >= 400) { console.debug('[lexora] watch page', page.status); return null; }
     const pr = extractEmbeddedJson(page.text, 'ytInitialPlayerResponse') as PlayerResponse | null;
     const tracks = pr?.captions?.playerCaptionsTracklistRenderer?.captionTracks ?? [];
@@ -39,7 +37,7 @@ async function fromWatchPage(videoId: string): Promise<string | null> {
     const best = [...tracks].sort((a, b) => score(b) - score(a))[0];
     if (!best?.baseUrl) return null;
     const sep = best.baseUrl.includes('?') ? '&' : '?';
-    const sub = await requestUrl({ url: `${best.baseUrl}${sep}fmt=vtt`, headers: UA, throw: false });
+    const sub = await ytGet(plugin, `${best.baseUrl}${sep}fmt=vtt`);
     console.debug('[lexora] timedtext:', sub.status, sub.text?.length ?? 0);
     if (sub.status >= 400 || !sub.text?.includes('WEBVTT')) return null;
     return sub.text;
@@ -52,12 +50,13 @@ async function fromWatchPage(videoId: string): Promise<string | null> {
 interface InvCaption { label?: string; languageCode?: string; language_code?: string; url?: string }
 
 /** 路线二：Invidious 镜像的字幕 API（服务端已处理校验，直接给 vtt）。 */
-async function fromInvidious(videoId: string): Promise<string | null> {
+async function fromInvidious(plugin: ElpPlugin, videoId: string): Promise<string | null> {
   for (const base of INVIDIOUS_MIRRORS) {
     try {
-      const list = await requestUrl({ url: `${base}/api/v1/captions/${videoId}`, headers: UA, throw: false });
+      const list = await ytGet(plugin, `${base}/api/v1/captions/${videoId}`);
       if (list.status >= 400) continue;
-      const caps = (list.json as { captions?: InvCaption[] }).captions ?? [];
+      let caps: InvCaption[] = [];
+      try { caps = (JSON.parse(list.text) as { captions?: InvCaption[] }).captions ?? []; } catch { continue; }
       console.debug('[lexora] invidious captions', base, caps.length);
       if (caps.length === 0) continue;
       const score = (c: InvCaption): number => {
@@ -67,7 +66,7 @@ async function fromInvidious(videoId: string): Promise<string | null> {
       const best = [...caps].sort((a, b) => score(b) - score(a))[0];
       if (!best?.url) continue;
       const url = best.url.startsWith('http') ? best.url : `${base}${best.url}`;
-      const sub = await requestUrl({ url, headers: UA, throw: false });
+      const sub = await ytGet(plugin, url);
       if (sub.status < 400 && sub.text?.includes('WEBVTT')) return sub.text;
     } catch { /* 下一个镜像 */ }
   }
@@ -76,7 +75,7 @@ async function fromInvidious(videoId: string): Promise<string | null> {
 
 /** 返回 vtt 文本；三条路线（官方页 → Invidious → NAS worker yt-dlp）都失败返回 null。 */
 export async function fetchYoutubeSubtitle(plugin: ElpPlugin, videoId: string): Promise<string | null> {
-  const direct = (await fromWatchPage(videoId)) ?? (await fromInvidious(videoId));
+  const direct = (await fromWatchPage(plugin, videoId)) ?? (await fromInvidious(plugin, videoId));
   if (direct) return direct;
   if (plugin.settings.workerUrl) {
     console.debug('[lexora] trying worker subtitle');

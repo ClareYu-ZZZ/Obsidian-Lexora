@@ -60,8 +60,10 @@ export interface ElpSettings {
   installId?: string;
   /** Bilibili SESSDATA（可选，仅用于拉取 CC 字幕；部分字幕需登录可见）。 */
   bilibiliSessdata?: string;
+  /** YouTube Cookie（可选，仅本机直连 YouTube 时附带；用于绕过 bot 校验/看登录可见字幕）。 */
+  youtubeCookie?: string;
   /** 官方推荐源缓存（控制台维护，7 天有效）。 */
-  officialFeedsCache?: { at: number; feeds: Array<{ name: string; url: string; hint: string }> };
+  officialFeedsCache?: { at: number; feeds: Array<{ name: string; url: string; hint: string; region?: 'cn' | 'global' }> };
   lastUpdateCheckAt?: number;
   lastPingAt?: number;
   lastNotifiedVersion?: string;
@@ -175,6 +177,26 @@ export class ElpSettingTab extends PluginSettingTab {
         t.inputEl.type = 'password';
         t.inputEl.style.width = '240px';
       });
+
+    new Setting(containerEl).setName('YouTube').setHeading();
+    new Setting(containerEl)
+      .setName('Cookie（可选）')
+      .setDesc('仅在你的网络能直连 YouTube 时有用：附在本机发往 youtube.com 的请求上，用于绕过机器人校验、获取登录可见字幕。浏览器登录 youtube.com 后复制完整 Cookie；只保存在本机，绝不发送到 Lexora 服务器或任何第三方。')
+      .addText((t) => {
+        t.setValue(this.plugin.settings.youtubeCookie ?? '').onChange(async (v) => {
+          this.plugin.settings.youtubeCookie = v.trim();
+          await this.plugin.saveSettings();
+        });
+        t.inputEl.type = 'password';
+        t.inputEl.style.width = '240px';
+      })
+      .addButton((b) => b.setButtonText('检测直连').onClick(async () => {
+        const { probeOverseas } = await import('./yt-net');
+        b.setButtonText('检测中…');
+        const ok = await probeOverseas(this.plugin, true);
+        b.setButtonText('检测直连');
+        new Notice(ok ? '当前网络可直连 YouTube ✓ 境外源已启用' : '当前网络无法直连 YouTube，境外源保持隐藏');
+      }));
 
     new Setting(containerEl).setName('词典').setHeading();
 

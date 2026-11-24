@@ -8,7 +8,7 @@ import type ElpPlugin from './main';
 
 export const OFFICIAL_BASE = 'https://worker.lexora-agent.com';
 
-export interface PresetFeed { name: string; url: string; hint: string }
+export interface PresetFeed { name: string; url: string; hint: string; region?: 'cn' | 'global' }
 
 export interface LibraryFile { name: string; size: number; type: string }
 export interface LibraryCollection {
@@ -33,13 +33,17 @@ export async function refreshRecommended(plugin: ElpPlugin): Promise<void> {
     const res = await requestUrl({ url: `${OFFICIAL_BASE}/v1/recommended-feeds`, throw: false });
     const feeds = res.status === 200 ? res.json?.feeds : null;
     if (!Array.isArray(feeds) || feeds.length === 0) return;
-    const TYPE_HINT: Record<string, string> = { bilibili: 'B站', rss: '播客', article: '文章' };
+    const TYPE_HINT: Record<string, string> = { bilibili: 'B站', rss: '播客', article: '文章', youtube: 'YouTube' };
     plugin.settings.officialFeedsCache = {
       at: Date.now(),
-      feeds: feeds.map((f: { name: string; url: string; group?: string; type?: string }) => ({
+      feeds: feeds.map((f: { name: string; url: string; group?: string; type?: string; region?: string }) => ({
         name: String(f.name),
         url: String(f.url),
         hint: f.group || TYPE_HINT[f.type ?? ''] || '推荐',
+        // 未标注 region 的旧数据：YouTube 地址视为境外，其余国内直连
+        region: (f.region === 'global' || f.region === 'cn')
+          ? f.region
+          : (/youtube\.com|youtu\.be/.test(String(f.url)) ? 'global' as const : 'cn' as const),
       })),
     };
     await plugin.saveSettings();

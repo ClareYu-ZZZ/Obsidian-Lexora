@@ -169,12 +169,13 @@ progress{width:180px;height:8px;accent-color:#2E9E68}
     <div class="addrow">
       <div class="fld" style="flex:2 1 240px"><label>地址（RSS / B 站 UP 主主页）</label><input type="text" id="nf-url" placeholder="https://space.bilibili.com/…"></div>
       <div class="fld" style="flex:1 1 130px"><label>显示名称</label><input type="text" id="nf-name" placeholder="英语兔"></div>
-      <div class="fld" style="flex:1 1 110px"><label>类型</label><select id="nf-type"><option value="bilibili">B站 UP 主</option><option value="rss">播客/RSS</option><option value="article">文章</option></select></div>
+      <div class="fld" style="flex:1 1 110px"><label>类型</label><select id="nf-type"><option value="bilibili">B站 UP 主</option><option value="rss">播客/RSS</option><option value="article">文章</option><option value="youtube">YouTube 频道</option></select></div>
+      <div class="fld" style="flex:1 1 120px"><label>可达性</label><select id="nf-region"><option value="cn">国内直连</option><option value="global">境外（仅直连用户可见）</option></select></div>
       <div class="fld" style="flex:1 1 110px"><label>分组标签</label><input type="text" id="nf-group" placeholder="B站 · 口语"></div>
       <button class="btn pri" onclick="addFeed()">+ 添加</button>
     </div>
     <div class="panel"><table><thead><tr><th style="width:30%">名称</th><th>类型</th><th>地址</th><th>排序</th><th>启用</th><th></th></tr></thead><tbody id="fd-rows"></tbody></table></div>
-    <div class="note">说明：YouTube 源不进推荐清单（用户仍可自行粘贴订阅，抓取发生在用户本机网络）；改动先「保存并发布」才会生效。</div>
+    <div class="note">说明：标为「境外」的源（YouTube 等）只对能直连 YouTube 的用户展示，插件在用户本机探测，抓取也发生在用户本机网络，服务器不代理任何境外请求；改动先「保存并发布」才会生效。</div>
   </section>
 
   <section class="sect" id="s-library">
@@ -247,7 +248,7 @@ function renderFeeds(){
   $('fd-rows').innerHTML=FEEDS.map((f,i)=>{const[c,label]=TYPE_TAG[f.type]||['p',f.type];
     return `<tr><td>${esc(f.name)}${f.group?` <span class="muted">· ${esc(f.group)}</span>`:''}</td>
     <td><span class="tag ${c}">${label}</span></td>
-    <td class="muted" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(f.url)}</td>
+    <td class="muted" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${f.region==='global'?'🌐 ':''}${esc(f.url)}</td>
     <td><button class="btn" style="padding:3px 9px" onclick="moveFeed(${i},-1)">↑</button> <button class="btn" style="padding:3px 9px" onclick="moveFeed(${i},1)">↓</button></td>
     <td><button class="tg ${f.enabled?'on':''}" aria-label="启用开关" onclick="FEEDS[${i}].enabled=!FEEDS[${i}].enabled;renderFeeds()"><i></i></button></td>
     <td><button class="btn danger" onclick="FEEDS.splice(${i},1);renderFeeds()">移除</button></td></tr>`;}).join('')
@@ -255,7 +256,7 @@ function renderFeeds(){
 }
 function addFeed(){const url=$('nf-url').value.trim(),name=$('nf-name').value.trim();
   if(!url||!name){alert('地址和名称必填');return}
-  FEEDS.push({id:'f'+Date.now().toString(36),name,url,type:$('nf-type').value,group:$('nf-group').value.trim(),enabled:true});
+  FEEDS.push({id:'f'+Date.now().toString(36),name,url,type:$('nf-type').value,group:$('nf-group').value.trim(),region:$('nf-region').value,enabled:true});
   $('nf-url').value='';$('nf-name').value='';$('nf-group').value='';renderFeeds();}
 function moveFeed(i,d){const t=i+d;if(t<0||t>=FEEDS.length)return;[FEEDS[i],FEEDS[t]]=[FEEDS[t],FEEDS[i]];renderFeeds();}
 async function saveFeeds(){await j('/admin/api/feeds',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({feeds:FEEDS})});alert('已发布，全体用户下次启动即生效');}
