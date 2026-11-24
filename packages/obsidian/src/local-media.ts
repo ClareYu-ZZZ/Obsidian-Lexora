@@ -2,6 +2,7 @@ import { Modal, Notice, Platform, Setting, TFile } from 'obsidian';
 import type ElpPlugin from './main';
 import { generateFromMedia } from './generate';
 import type { UploadSource } from './worker-client';
+import { findFfmpeg, isWebSafeAudio, probeAudioCodec, runFf } from './ffmpeg';
 import { SubtitlePickModal } from './subtitle-modal';
 
 const MEDIA_EXT = new Set(['mp4', 'webm', 'mov', 'm4v', 'mkv', 'mp3', 'm4a', 'wav', 'ogg', 'flac']);
@@ -124,6 +125,23 @@ async function streamImport(
   if (!base) throw new Error('无法定位 vault 目录');
   const destAbs = pathMod.join(base, ...destRel.split('/'));
   await fs.promises.mkdir(pathMod.dirname(destAbs), { recursive: true });
+  // 浏览器内核解码不了 AC-3/DTS 等音轨（画面正常、声音静默）。导入视频时探测，
+  // 不安全则视频流原样复制、音轨转 AAC；探测不可用或本来安全则纯流式复制。
+  const ext = destRel.split('.').pop()?.toLowerCase() ?? '';
+  if (VIDEO_EXT.has(ext)) {
+    const ffmpeg = findFfmpeg();
+    const codec = ffmpeg ? await probeAudioCodec(srcAbs) : null;
+    if (ffmpeg && codec && !isWebSafeAudio(codec)) {
+      notice.setMessage(`音轨 ${codec} 浏览器不支持，转 AAC 导入中（视频流不转码）…`);
+      await runFf(ffmpeg, ['-y', '-i', srcAbs, '-c:v', 'copy', '-c:a', 'aac', '-b:a', '160k', destAbs]);
+      for (let i = 0; i < 50; i++) {
+        const f0 = plugin.app.vault.getAbstractFileByPath(destRel);
+        if (f0 instanceof TFile) return f0;
+        await new Promise((r) => window.setTimeout(r, 200));
+      }
+      throw new Error('导入完成但 vault 未索引到文件，请重启 Obsidian 后在 _imports 目录找到它');
+    }
+  }
   await new Promise<void>((resolve, reject) => {
     const rs = fs.createReadStream(srcAbs);
     const ws = fs.createWriteStream(destAbs);
@@ -175,22 +193,6 @@ async function onMediaPicked(plugin: ElpPlugin, media: TFile): Promise<void> {
 const VIDEO_EXT = new Set(['mp4', 'webm', 'mov', 'm4v', 'mkv']);
 const EXTRACT_THRESHOLD = 80 * 1024 * 1024;   // 超过 80MB 的视频抽音轨再上传
 const UPLOAD_HARD_CAP = 1.5 * 1024 ** 3;      // 无法抽音轨时的上传上限
-
-function findFfmpeg(): string | null {
-  const req = (window as Window & { require?: (m: string) => unknown }).require;
-  if (!req) return null;
-  const fs = req('fs') as typeof import('fs');
-  for (const c of ['/opt/homebrew/bin/ffmpeg', '/usr/local/bin/ffmpeg', '/usr/bin/ffmpeg']) {
-    if (fs.existsSync(c)) return c;
-  }
-  try {
-    const { execFileSync } = req('child_process') as typeof import('child_process');
-    execFileSync('ffmpeg', ['-version'], { stdio: 'ignore' });
-    return 'ffmpeg';
-  } catch {
-    return null;
-  }
-}
 
 /**
  * 转写前预处理：桌面端的大视频用本地 ffmpeg 只抽音轨（先试无损 remux，

@@ -1,6 +1,7 @@
 import { Notice, TFile, normalizePath, requestUrl } from 'obsidian';
 import { Readability } from '@mozilla/readability';
 import JSZip from 'jszip';
+import { findFfmpeg, runFf } from './ffmpeg';
 import {
   LESSON_NOTE_NAME, buildLessonData, cuesToSegments, htmlToText, lessonFolderName,
   lessonMarkdown, mineLesson, paraRanges, parseSubtitle, textToSegments,
@@ -33,6 +34,39 @@ async function writeLesson(plugin: ElpPlugin, data: LessonData): Promise<string>
 }
 
 /** 长难句 + 段落原声切片（需本地媒体 + worker ffmpeg）。失败不阻断生成。 */
+/** 本地 ffmpeg 切片：逐段 -ss/-to 抽 mp3，零上传。环境不满足或失败返回 false 走 worker。 */
+async function makeClipsLocally(
+  plugin: ElpPlugin,
+  mediaFile: TFile,
+  segs: Array<{ name: string; start: number; end: number }>,
+  folder: string,
+  notice: Notice,
+): Promise<boolean> {
+  const ffmpeg = findFfmpeg();
+  const adapter = plugin.app.vault.adapter as { getBasePath?: () => string };
+  const base = adapter.getBasePath?.();
+  const req = (window as Window & { require?: (m: string) => unknown }).require;
+  if (!ffmpeg || !base || !req) return false;
+  const pathMod = req('path') as typeof import('path');
+  const srcAbs = pathMod.join(base, ...mediaFile.path.split('/'));
+  await plugin.storage.mkdir(`${folder}/clips`);
+  try {
+    for (let i = 0; i < segs.length; i++) {
+      const seg = segs[i];
+      notice.setMessage(`本地切片 ${i + 1}/${segs.length}…`);
+      const destAbs = pathMod.join(base, ...`${folder}/clips/${seg.name}.mp3`.split('/'));
+      await runFf(ffmpeg, [
+        '-y', '-ss', seg.start.toFixed(3), '-to', seg.end.toFixed(3),
+        '-i', srcAbs, '-vn', '-c:a', 'libmp3lame', '-b:a', '128k', destAbs,
+      ]);
+    }
+    return true;
+  } catch (e) {
+    console.error('[lexora] local clip failed, falling back to worker', e);
+    return false;
+  }
+}
+
 async function makeClips(plugin: ElpPlugin, data: LessonData): Promise<void> {
   const mediaPath = data.media?.kind === 'local' ? data.media.path : undefined;
   if (!mediaPath) return;
@@ -64,12 +98,20 @@ async function makeClips(plugin: ElpPlugin, data: LessonData): Promise<void> {
 
   if (!plugin.license.ensurePro('worker-advanced')) return; // 无 Pro 时教程仍生成，只是没有切片
   const notice = new Notice('生成原声切片…', 0);
+  const clipFolder = normalizePath(`${plugin.settings.lessonsFolder}/${lessonFolderName(data.title, new Date(data.createdAt))}`);
+  // 桌面端优先本地 ffmpeg 切片：零上传（大视频场景从"必死"变秒级），worker 留作兜底
+  if (await makeClipsLocally(plugin, mediaFile, segs, clipFolder, notice)) {
+    data.clips = { hard: hardMap, para: paraMap };
+    notice.setMessage(`切片完成：${segs.length} 段（本地）`);
+    window.setTimeout(() => notice.hide(), 3000);
+    return;
+  }
   try {
     const zipBytes = await plugin.worker.clipJob(mediaFile, segs, (status, progress) => {
       notice.setMessage(status === 'running' ? `切片 ${(progress * 100).toFixed(0)}%…` : '切片排队中…');
     });
     const zip = await JSZip.loadAsync(zipBytes);
-    const folder = normalizePath(`${plugin.settings.lessonsFolder}/${lessonFolderName(data.title, new Date(data.createdAt))}`);
+    const folder = clipFolder;
     await plugin.storage.mkdir(`${folder}/clips`);
     for (const [name, entry] of Object.entries(zip.files)) {
       if (entry.dir) continue;
