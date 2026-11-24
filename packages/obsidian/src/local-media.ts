@@ -88,13 +88,63 @@ async function importPickedFile(plugin: ElpPlugin, picked: File): Promise<void> 
   }
   const notice = new Notice(`导入 ${picked.name}…`, 0);
   try {
-    const file = await plugin.app.vault.createBinary(dest, await readPickedFile(picked));
+    let file: TFile | null = null;
+    const abs = pickedFilePath(picked);
+    if (abs && Platform.isDesktopApp) {
+      // 桌面端：Node 流式复制，内存占用恒定，不受 2GiB 限制
+      file = await streamImport(plugin, abs, dest, picked.size, notice);
+    } else {
+      if (picked.size > 1.8 * 1024 ** 3) {
+        throw new Error('文件超过 1.8GB，移动端无法导入，请在电脑上操作');
+      }
+      file = await plugin.app.vault.createBinary(dest, await readPickedFile(picked)) as TFile;
+    }
     notice.hide();
-    await onMediaPicked(plugin, file);
+    if (file) await onMediaPicked(plugin, file);
   } catch (e) {
     notice.hide();
     new Notice(`导入失败：${explainReadError(e as Error)}`, 12000);
   }
+}
+
+/** Node 流式复制进 vault，并等 vault 索引到新文件。 */
+async function streamImport(
+  plugin: ElpPlugin,
+  srcAbs: string,
+  destRel: string,
+  totalBytes: number,
+  notice: Notice,
+): Promise<TFile> {
+  const req = (window as Window & { require?: (m: string) => unknown }).require!;
+  const fs = req('fs') as typeof import('fs');
+  const pathMod = req('path') as typeof import('path');
+  const adapter = plugin.app.vault.adapter as { getBasePath?: () => string };
+  const base = adapter.getBasePath?.();
+  if (!base) throw new Error('无法定位 vault 目录');
+  const destAbs = pathMod.join(base, ...destRel.split('/'));
+  await fs.promises.mkdir(pathMod.dirname(destAbs), { recursive: true });
+  await new Promise<void>((resolve, reject) => {
+    const rs = fs.createReadStream(srcAbs);
+    const ws = fs.createWriteStream(destAbs);
+    let copied = 0;
+    rs.on('data', (chunk: string | Buffer) => {
+      copied += typeof chunk === 'string' ? chunk.length : chunk.byteLength;
+      if (totalBytes > 0) {
+        notice.setMessage(`导入中 ${(copied / totalBytes * 100).toFixed(0)}%（${(copied / 1048576).toFixed(0)}MB）…`);
+      }
+    });
+    rs.on('error', reject);
+    ws.on('error', reject);
+    ws.on('finish', () => resolve());
+    rs.pipe(ws);
+  });
+  // vault 文件监听通常 1 秒内索引到；轮询拿 TFile
+  for (let i = 0; i < 50; i++) {
+    const f = plugin.app.vault.getAbstractFileByPath(destRel);
+    if (f instanceof TFile) return f;
+    await new Promise((r) => window.setTimeout(r, 200));
+  }
+  throw new Error('导入完成但 vault 未索引到文件，请重启 Obsidian 后在 _imports 目录找到它');
 }
 
 function findSidecarSubtitle(plugin: ElpPlugin, media: TFile): TFile | null {
