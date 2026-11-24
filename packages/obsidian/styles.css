@@ -1519,3 +1519,6 @@ body.elp-style-background .elp-word {
   font-size: 11px; color: #fff; background: rgba(0, 0, 0, 0.65);
   pointer-events: none;
 }
+
+/* 连播/字幕模式按钮选中态 */
+.elp-icon-btn.is-on { color: var(--interactive-accent); background: var(--background-modifier-hover); }

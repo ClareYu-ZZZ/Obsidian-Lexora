@@ -131,7 +131,8 @@ async function toggleFollowMark(
   if (!(file instanceof TFile)) return;
   await plugin.app.vault.process(file, (content) => {
     const lines = content.split('\n');
-    const isFollow = (l: string) => l.includes('跟读：') && /\[( |x)\]/i.test(l);
+    // 模板行是 `- **跟读**：…`（粗体星号隔开 跟读 和 ：），所以只认 '跟读' + 复选框
+    const isFollow = (l: string) => l.includes('跟读') && /\[( |x)\]/i.test(l);
     let target = -1;
     if (loc.lineStart !== undefined && loc.lineEnd !== undefined) {
       for (let ln = Math.max(0, loc.lineStart); ln <= Math.min(loc.lineEnd, lines.length - 1); ln++) {
@@ -165,6 +166,8 @@ async function toggleFollowMark(
 
 /** 字幕（当前句卡片）显隐的会话级默认值。 */
 let subsHiddenDefault = false;
+/** 字幕展示模式：false=单句，true=全文滚动（随当前句滚动+高亮）。 */
+let subsScrollDefault = false;
 
 // ---- 轻量切片播放胶囊 ----
 let activeClip: HTMLAudioElement | null = null;
@@ -519,6 +522,14 @@ export class PlayerController {
   private ttsSeq = 0;
   private ttsPlaying = false;
   private transcriptEl: HTMLElement | null = null;
+  /** 连播进行中（按钮高亮；任何暂停/手动点句即退出）。 */
+  private chaining = false;
+  private chainBtn: HTMLElement | null = null;
+
+  private clearChain(): void {
+    this.chaining = false;
+    this.chainBtn?.removeClass('is-on');
+  }
 
   /** 文本课：从 from 逐句 TTS 连读到 to；loop 时循环整个区间。 */
   private speakRange(from: number, to: number): void {
@@ -551,6 +562,7 @@ export class PlayerController {
 
   /** 播放一句（endIdx 给定时播放 [idx..endIdx] 整个区间，如段落 ▶）。 */
   playSegment(idx: number, endIdx?: number): void {
+    this.clearChain();
     const seg = this.data.segments[idx];
     if (!seg) return;
     const lastIdx = Math.min(Math.max(endIdx ?? idx, idx), this.data.segments.length - 1);
@@ -616,6 +628,7 @@ export class PlayerController {
   // ---------- UI ----------
 
   private setPlayIcon(playing: boolean): void {
+    if (!playing) this.clearChain();
     if (this.playBtnIcon) setIcon(this.playBtnIcon, playing ? 'pause' : 'play');
   }
 
@@ -685,10 +698,14 @@ export class PlayerController {
       this.loop = !this.loop;
       loopBtn.toggleClass('is-on', this.loop);
     };
-    iconButton(bar, 'list-video', '连播到结尾（从当前句不停顿播完）', () => {
+    const chainBtn = iconButton(bar, 'list-video', '连播到结尾（从当前句不停顿播完；再点停止）', () => {
+      if (this.chaining) { this.pause(); return; }
       const start = this.current < 0 ? 0 : this.current;
       this.playSegment(start, this.data.segments.length - 1);
+      this.chaining = true;
+      chainBtn.addClass('is-on');
     }, 'elp-pane-side');
+    this.chainBtn = chainBtn;
 
     // ---- 进度条（本地/远程音视频才有真实时间轴） ----
     if (this.backend.kind === 'local') {
@@ -748,17 +765,33 @@ export class PlayerController {
     setIcon(capIcon, subsHiddenDefault ? 'captions-off' : 'captions');
     capBtn.onclick = () => {
       subsHiddenDefault = !subsHiddenDefault;
-      this.sentenceEl?.toggleClass('is-hidden', subsHiddenDefault);
+      this.applySubtitleMode();
       setIcon(capIcon, subsHiddenDefault ? 'captions-off' : 'captions');
       capBtn.toggleClass('is-dim', subsHiddenDefault);
     };
+
+    // 字幕模式：单句 ⇄ 全文滚动（文本课本来就是全文，不需要）
+    if (this.backend.kind !== 'tts') {
+      const modeBtn = row2.createEl('button', {
+        cls: 'elp-icon-btn' + (subsScrollDefault ? ' is-on' : ''),
+        attr: { 'aria-label': '字幕模式：单句 / 全文滚动', title: '字幕模式：单句 / 全文滚动' },
+      });
+      const modeIcon = modeBtn.createSpan();
+      setIcon(modeIcon, 'scroll-text');
+      modeBtn.onclick = () => {
+        subsScrollDefault = !subsScrollDefault;
+        modeBtn.toggleClass('is-on', subsScrollDefault);
+        this.applySubtitleMode();
+        this.updateSentence();
+      };
+    }
 
     // ---- 当前句 ----
     this.sentenceEl = root.createDiv({ cls: 'elp-pane-sentence' + (subsHiddenDefault || this.backend.kind === 'tts' ? ' is-hidden' : '') });
     this.updateSentence();
 
-    // ---- 文本课：全文转写区（当前句高亮，点任意句朗读） ----
-    if (this.backend.kind === 'tts') {
+    // ---- 全文转写区（当前句高亮+滚动跟随；文本课常驻，音视频课由字幕模式切换） ----
+    {
       const wrap = root.createDiv({ cls: 'elp-pane-transcript' });
       const ranges = paraRanges(this.data.segments);
       ranges.forEach((p, ri) => {
@@ -772,6 +805,15 @@ export class PlayerController {
       });
       this.transcriptEl = wrap;
     }
+    this.applySubtitleMode();
+  }
+
+  /** 按 隐藏字幕 + 字幕模式 决定单句区/全文区的可见性。 */
+  private applySubtitleMode(): void {
+    const tts = this.backend.kind === 'tts';
+    const scroll = tts || subsScrollDefault;
+    this.sentenceEl?.toggleClass('is-hidden', subsHiddenDefault || scroll);
+    this.transcriptEl?.toggleClass('is-hidden', subsHiddenDefault ? !tts : !scroll);
   }
 
   // ---------- 跟读录音 ----------

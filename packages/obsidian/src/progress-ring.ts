@@ -16,7 +16,7 @@ async function render(plugin: ElpPlugin): Promise<void> {
   let checked = 0;
   let total = 0;
   for (const line of text.split('\n')) {
-    if (!line.includes('跟读：')) continue;
+    if (!line.includes('跟读')) continue;
     checked += (line.match(/\[x\]/gi) ?? []).length;
     total += (line.match(/\[[ x]\]/gi) ?? []).length;
   }
