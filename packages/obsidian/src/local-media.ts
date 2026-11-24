@@ -1,4 +1,4 @@
-import { Modal, Notice, Setting, TFile } from 'obsidian';
+import { Modal, Notice, Platform, Setting, TFile } from 'obsidian';
 import type ElpPlugin from './main';
 import { generateFromMedia } from './generate';
 import { SubtitlePickModal } from './subtitle-modal';
@@ -15,6 +15,32 @@ export function pickLocalMedia(plugin: ElpPlugin): void {
     if (f) void importPickedFile(plugin, f);
   };
   input.click();
+}
+
+/**
+ * 读取系统选择器给的文件。Chromium 的 blob 读取在 macOS 受保护目录（桌面/文稿/
+ * 下载等）上常抛 NotReadableError——桌面端自动降级为 Node fs 按绝对路径读。
+ */
+async function readPickedFile(picked: File): Promise<ArrayBuffer> {
+  try {
+    return await picked.arrayBuffer();
+  } catch (e) {
+    const abs = (picked as File & { path?: string }).path;
+    const req = (window as Window & { require?: (m: string) => unknown }).require;
+    if (abs && Platform.isDesktopApp && req) {
+      const fs = req('fs/promises') as { readFile: (p: string) => Promise<Uint8Array> };
+      const buf = await fs.readFile(abs);
+      return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
+    }
+    throw e;
+  }
+}
+
+function explainReadError(e: Error): string {
+  if (/could not be read|NotReadable|EPERM|operation not permitted/i.test(e.message)) {
+    return '读取被系统拦截（macOS 文件权限）。修复：系统设置 → 隐私与安全性 → 文件与文件夹（或完全磁盘访问权限）→ 允许 Obsidian；或把文件移出桌面/文稿/下载目录后重试。';
+  }
+  return e.message;
 }
 
 /** 把系统选择器拿到的文件接进原流程：vault 内文件直接用，vault 外导入副本。 */
@@ -47,12 +73,12 @@ async function importPickedFile(plugin: ElpPlugin, picked: File): Promise<void> 
   }
   const notice = new Notice(`导入 ${picked.name}…`, 0);
   try {
-    const file = await plugin.app.vault.createBinary(dest, await picked.arrayBuffer());
+    const file = await plugin.app.vault.createBinary(dest, await readPickedFile(picked));
     notice.hide();
     await onMediaPicked(plugin, file);
   } catch (e) {
     notice.hide();
-    new Notice(`导入失败：${(e as Error).message}`);
+    new Notice(`导入失败：${explainReadError(e as Error)}`, 12000);
   }
 }
 
@@ -99,7 +125,7 @@ class SubtitleSourceModal extends Modal {
           if (!f) return;
           this.close();
           void (async () => {
-            const text = await f.text();
+            const text = new TextDecoder().decode(await readPickedFile(f));
             await generateFromMedia(this.plugin, {
               title: this.media.basename,
               media: { kind: 'local', path: this.media.path },
