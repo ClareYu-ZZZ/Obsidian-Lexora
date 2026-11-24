@@ -1,3 +1,4 @@
+import { cutWorksheet } from './article-clean';
 import { bilibiliWatchUrl, fetchBiliSubtitleVtt, fetchSpaceFeed, parseBilibiliSpace } from './bilibili';
 import { cachedRecommended, refreshRecommended, renderLibrarySection } from './official';
 import { App, Modal, Notice, Setting, TFile, requestUrl, setIcon } from 'obsidian';
@@ -254,7 +255,7 @@ export class FeedsPanel {
     }
 
     const content = body.createDiv({ cls: 'elp-reader-content' });
-    const html = item.contentHtml ?? item.summary ?? '';
+    const html = cutWorksheet(item.contentHtml ?? item.summary ?? '', item.link);
     if (html.trim()) renderSafeHtml(content, html);
     const plainLen = htmlToText(html).trim().length;
     // NPR 这类 feed 只给一两句摘要：从原文页用 Readability 抽全文补上
@@ -268,7 +269,7 @@ export class FeedsPanel {
           if (this.detail !== item) return;
           if (article?.content && (article.textContent?.trim().length ?? 0) > plainLen + 200) {
             content.empty();
-            renderSafeHtml(content, article.content);
+            renderSafeHtml(content, cutWorksheet(article.content, item.link));
           } else {
             note.setText(plainLen === 0 ? '这条没有正文，点右上角打开原文阅读。' : '');
             if (plainLen > 0) note.remove();

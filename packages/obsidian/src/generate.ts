@@ -1,6 +1,7 @@
 import { Notice, TFile, normalizePath, requestUrl } from 'obsidian';
 import { Readability } from '@mozilla/readability';
 import JSZip from 'jszip';
+import { cutWorksheet } from './article-clean';
 import { findFfmpeg, runFf } from './ffmpeg';
 import {
   LESSON_NOTE_NAME, buildLessonData, cuesToSegments, htmlToText, lessonFolderName,
@@ -259,6 +260,7 @@ export async function generateFromArticle(
     }
     if (!text && args.contentHtml) text = htmlToText(args.contentHtml);
     if (!text) throw new Error('拿不到正文（站点可能反爬，试试在浏览器另存后用「从当前笔记生成」）');
+    text = cutWorksheet(text, args.url);
 
     const segments = textToSegments(text);
     if (segments.length < 3) throw new Error('正文太短，不值得挖');

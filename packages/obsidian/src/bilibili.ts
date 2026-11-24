@@ -69,7 +69,8 @@ async function wbiSign(plugin: ElpPlugin, params: Record<string, string | number
 }
 
 export function parseBilibiliSpace(url: string): string | null {
-  const m = url.match(/space\.bilibili\.com\/(\d+)/);
+  // 兼容带语言段的链接：space.bilibili.com/en/123、/zh-Hant/123 等
+  const m = url.match(/space\.bilibili\.com\/(?:[A-Za-z]{2}(?:-[A-Za-z]{2,4})?\/)?(\d+)/);
   return m ? m[1] : null;
 }
 
