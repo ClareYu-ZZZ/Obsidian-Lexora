@@ -1,6 +1,9 @@
 import { TFile, requestUrl } from 'obsidian';
 import type ElpPlugin from './main';
 
+/** 上传源：vault 文件，或预处理后的内存字节（如大视频抽出的音轨）。 */
+export type UploadSource = TFile | { name: string; bytes: ArrayBuffer };
+
 export interface WorkerCapabilities {
   apiVersion: string;
   name: string;
@@ -112,7 +115,7 @@ export class WorkerClient {
 
   /** 上传媒体 → 轮询 → 返回 VTT 文本。 */
   async transcribe(
-    file: TFile,
+    file: UploadSource,
     onProgress?: (status: string, progress: number) => void,
   ): Promise<string> {
     const jobId = await this.createJob(file, 'transcribe', { language: 'en' });
@@ -124,8 +127,8 @@ export class WorkerClient {
     return result.text;
   }
 
-  private async createJob(file: TFile, type: string, options: unknown): Promise<string> {
-    const bytes = await this.plugin.app.vault.readBinary(file);
+  private async createJob(file: UploadSource, type: string, options: unknown): Promise<string> {
+    const bytes = file instanceof TFile ? await this.plugin.app.vault.readBinary(file) : file.bytes;
     const boundary = `----lexora${Date.now().toString(36)}`;
     const enc = new TextEncoder();
     const part = (name: string, value: string) =>

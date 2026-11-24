@@ -1,6 +1,7 @@
 import { Modal, Notice, Platform, Setting, TFile } from 'obsidian';
 import type ElpPlugin from './main';
 import { generateFromMedia } from './generate';
+import type { UploadSource } from './worker-client';
 import { SubtitlePickModal } from './subtitle-modal';
 
 const MEDIA_EXT = new Set(['mp4', 'webm', 'mov', 'm4v', 'mkv', 'mp3', 'm4a', 'wav', 'ogg', 'flac']);
@@ -171,6 +172,80 @@ async function onMediaPicked(plugin: ElpPlugin, media: TFile): Promise<void> {
   new SubtitleSourceModal(plugin, media).open();
 }
 
+const VIDEO_EXT = new Set(['mp4', 'webm', 'mov', 'm4v', 'mkv']);
+const EXTRACT_THRESHOLD = 80 * 1024 * 1024;   // 超过 80MB 的视频抽音轨再上传
+const UPLOAD_HARD_CAP = 1.5 * 1024 ** 3;      // 无法抽音轨时的上传上限
+
+function findFfmpeg(): string | null {
+  const req = (window as Window & { require?: (m: string) => unknown }).require;
+  if (!req) return null;
+  const fs = req('fs') as typeof import('fs');
+  for (const c of ['/opt/homebrew/bin/ffmpeg', '/usr/local/bin/ffmpeg', '/usr/bin/ffmpeg']) {
+    if (fs.existsSync(c)) return c;
+  }
+  try {
+    const { execFileSync } = req('child_process') as typeof import('child_process');
+    execFileSync('ffmpeg', ['-version'], { stdio: 'ignore' });
+    return 'ffmpeg';
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 转写前预处理：桌面端的大视频用本地 ffmpeg 只抽音轨（先试无损 remux，
+ * 失败转 AAC 96k），上传量缩小一两个数量级。其余情况原样返回。
+ */
+async function mediaForTranscribe(plugin: ElpPlugin, media: TFile, notice: Notice): Promise<UploadSource> {
+  const isBigVideo = VIDEO_EXT.has(media.extension.toLowerCase()) && media.stat.size > EXTRACT_THRESHOLD;
+  if (!Platform.isDesktopApp || !isBigVideo) {
+    if (media.stat.size > UPLOAD_HARD_CAP) {
+      throw new Error(`文件 ${(media.stat.size / 1024 ** 3).toFixed(1)}GB 过大，无法上传转写`);
+    }
+    return media;
+  }
+  const req = (window as Window & { require?: (m: string) => unknown }).require;
+  const ffmpeg = findFfmpeg();
+  const adapter = plugin.app.vault.adapter as { getBasePath?: () => string };
+  const base = adapter.getBasePath?.();
+  if (!req || !ffmpeg || !base) {
+    if (media.stat.size > UPLOAD_HARD_CAP) {
+      throw new Error('大视频需要本地 ffmpeg 抽音轨后上传（brew install ffmpeg），或改用较小的文件');
+    }
+    new Notice('未找到 ffmpeg，将直接上传整个视频（较慢）。安装 ffmpeg 可只传音轨：brew install ffmpeg', 8000);
+    return media;
+  }
+  const { execFile } = req('child_process') as typeof import('child_process');
+  const fs = req('fs') as typeof import('fs');
+  const os = req('os') as typeof import('os');
+  const pathMod = req('path') as typeof import('path');
+  const srcAbs = pathMod.join(base, ...media.path.split('/'));
+  const tmp = pathMod.join(os.tmpdir(), `lexora-audio-${Date.now()}.m4a`);
+  const run = (args: string[]) => new Promise<void>((resolve, reject) => {
+    execFile(ffmpeg, args, { maxBuffer: 1 << 24 }, (err) => (err ? reject(err) : resolve()));
+  });
+  try {
+    notice.setMessage('抽取音轨中（无损）…');
+    try {
+      await run(['-y', '-i', srcAbs, '-vn', '-c:a', 'copy', tmp]);
+      if (!fs.existsSync(tmp) || fs.statSync(tmp).size < 10_000) throw new Error('copy produced no audio');
+    } catch {
+      notice.setMessage('抽取音轨中（转码 AAC）…');
+      await run(['-y', '-i', srcAbs, '-vn', '-c:a', 'aac', '-b:a', '96k', tmp]);
+    }
+    const stat = fs.statSync(tmp);
+    if (stat.size > UPLOAD_HARD_CAP) throw new Error(`音轨仍有 ${(stat.size / 1024 ** 3).toFixed(1)}GB，放弃上传`);
+    const buf = fs.readFileSync(tmp);
+    new Notice(`音轨 ${(stat.size / 1048576).toFixed(0)}MB（原视频 ${(media.stat.size / 1048576).toFixed(0)}MB）`, 5000);
+    return {
+      name: `${media.basename}.m4a`,
+      bytes: buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer,
+    };
+  } finally {
+    try { fs.rmSync(tmp, { force: true }); } catch { /* 忽略清理失败 */ }
+  }
+}
+
 /** 无同名字幕时：选字幕文件，或走 elp-worker 转写。 */
 class SubtitleSourceModal extends Modal {
   constructor(private plugin: ElpPlugin, private media: TFile) {
@@ -226,9 +301,11 @@ class SubtitleSourceModal extends Modal {
   private async transcribe(): Promise<void> {
     if (!this.plugin.license.ensurePro('worker-advanced')) return;
     this.close();
-    const notice = new Notice('上传媒体并转写中…', 0);
+    const notice = new Notice('准备媒体…', 0);
     try {
-      const vtt = await this.plugin.worker.transcribe(this.media, (status, progress) => {
+      const src = await mediaForTranscribe(this.plugin, this.media, notice);
+      notice.setMessage('上传媒体并转写中…');
+      const vtt = await this.plugin.worker.transcribe(src, (status, progress) => {
         notice.setMessage(status === 'running'
           ? `转写中 ${(progress * 100).toFixed(0)}%…`
           : '排队中…');
