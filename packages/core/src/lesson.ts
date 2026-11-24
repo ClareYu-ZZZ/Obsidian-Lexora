@@ -10,6 +10,8 @@ export interface LessonMedia {
   kind: 'youtube' | 'bilibili' | 'local' | 'remote';
   videoId?: string;
   bvid?: string;
+  /** Bilibili 分 P 的 cid：内嵌播放器精确定位所需 */
+  cid?: number;
   /** vault-relative path of a local media file */
   path?: string;
   /** streaming URL for kind 'remote'（如 RSS enclosure 原声） */

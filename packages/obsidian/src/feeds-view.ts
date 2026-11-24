@@ -1,5 +1,5 @@
 import { cutWorksheet } from './article-clean';
-import { bilibiliWatchUrl, fetchBiliSubtitleVtt, fetchSpaceFeed, parseBilibiliSpace } from './bilibili';
+import { bilibiliWatchUrl, fetchBiliSubtitle, fetchSpaceFeed, parseBilibiliSpace } from './bilibili';
 import { cachedRecommended, refreshRecommended, renderLibrarySection } from './official';
 import { App, Modal, Notice, Setting, TFile, requestUrl, setIcon } from 'obsidian';
 import {
@@ -287,12 +287,13 @@ export class FeedsPanel {
     if (item.bvid) {
       const bvid = item.bvid;
       const probing = new Notice('获取 B 站 CC 字幕…', 0);
-      const vtt = await fetchBiliSubtitleVtt(this.plugin, bvid).catch(() => null);
+      const sub = await fetchBiliSubtitle(this.plugin, bvid).catch(() => null);
       probing.hide();
+      const vtt = sub?.vtt ?? null;
       if (vtt) {
         await generateFromMedia(this.plugin, {
           title: item.title,
-          media: { kind: 'bilibili', bvid },
+          media: { kind: 'bilibili', bvid, cid: sub?.cid },
           subtitleText: vtt,
           sourceUrl: bilibiliWatchUrl(bvid),
           feedName: feed.name,
@@ -307,11 +308,11 @@ export class FeedsPanel {
         '，也可手动选字幕文件',
         8000,
       );
-      new SubtitlePickModal(this.app, this.plugin, async (sub) => {
+      new SubtitlePickModal(this.app, this.plugin, async (subFile) => {
         await generateFromMedia(this.plugin, {
           title: item.title,
-          media: { kind: 'bilibili', bvid },
-          subtitleFile: sub,
+          media: { kind: 'bilibili', bvid, cid: sub?.cid },
+          subtitleFile: subFile,
           sourceUrl: bilibiliWatchUrl(bvid),
           feedName: feed.name,
           itemId: item.id,

@@ -217,9 +217,14 @@ function sec2ts(s: number): string {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${sec}`;
 }
 
-/** 拉 CC 字幕并转 VTT；没有返回 null。英文轨优先，人工轨优先于 AI 轨。 */
-export async function fetchBiliSubtitleVtt(plugin: ElpPlugin, bvid: string): Promise<string | null> {
+/** 拉 CC 字幕并转 VTT（cid 一并返回，供内嵌播放器精确定位）。英文轨优先，人工轨优先于 AI 轨。 */
+export async function fetchBiliSubtitle(plugin: ElpPlugin, bvid: string): Promise<{ cid: number; vtt: string | null }> {
   const cid = await fetchCid(plugin, bvid);
+  const vtt = await fetchSubtitleByCid(plugin, bvid, cid);
+  return { cid, vtt };
+}
+
+async function fetchSubtitleByCid(plugin: ElpPlugin, bvid: string, cid: number): Promise<string | null> {
   const q = await wbiSign(plugin, { bvid, cid });
   const r = await biliGet(`https://api.bilibili.com/x/player/wbi/v2?${q}`, await biliHeaders(plugin, true));
   const j = safeJson(r) as { data?: { subtitle?: { subtitles?: Array<{ lan: string; subtitle_url?: string }> } } } | null;

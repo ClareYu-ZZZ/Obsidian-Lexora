@@ -217,12 +217,30 @@ interface BilibiliBackend {
   kind: 'bilibili';
   iframe: HTMLIFrameElement;
   bvid: string;
+  cid?: number;
+  /** 模拟时钟：B 站内嵌播放器无 JS API，用本地时间推进，iframe onload 时校准。 */
   lastTime: number;
+  playing: boolean;
+  baseAt: number; // Date.now() 起点；0 = iframe 还没加载完
 }
 
 
-function biliEmbedSrc(bvid: string, t: number, autoplay: boolean): string {
-  return `https://player.bilibili.com/player.html?bvid=${bvid}&page=1&high_quality=1&danmaku=0&autoplay=${autoplay ? 1 : 0}&t=${Math.max(0, Math.floor(t))}`;
+function biliEmbedSrc(b: BilibiliBackend, t: number, autoplay: boolean): string {
+  const cid = b.cid ? `&cid=${b.cid}` : '';
+  return `https://player.bilibili.com/player.html?bvid=${b.bvid}${cid}&page=1&high_quality=1&danmaku=0&autoplay=${autoplay ? 1 : 0}&t=${Math.max(0, Math.floor(t))}`;
+}
+
+function biliNow(b: BilibiliBackend): number {
+  if (!b.playing || b.baseAt === 0) return b.lastTime;
+  return b.lastTime + (Date.now() - b.baseAt) / 1000;
+}
+
+function biliLoad(b: BilibiliBackend, t: number, autoplay: boolean): void {
+  b.lastTime = t;
+  b.playing = autoplay;
+  b.baseAt = 0;
+  b.iframe.onload = () => { b.baseAt = Date.now(); };
+  b.iframe.src = biliEmbedSrc(b, t, autoplay);
 }
 
 export class PlayerController {
@@ -292,15 +310,13 @@ export class PlayerController {
     if (media?.kind === 'bilibili' && media.bvid) {
       const wrap = root.createDiv({ cls: 'elp-player-video' });
       const iframe = wrap.createEl('iframe', {
-        attr: {
-          src: biliEmbedSrc(media.bvid, 0, false),
-          frameborder: '0',
-          allow: 'autoplay; encrypted-media',
-          allowfullscreen: 'true',
-          scrolling: 'no',
-        },
+        attr: { frameborder: '0', allow: 'autoplay; encrypted-media', allowfullscreen: 'true', scrolling: 'no' },
       });
-      return { kind: 'bilibili', iframe, bvid: media.bvid, lastTime: 0 };
+      const backend: BilibiliBackend = {
+        kind: 'bilibili', iframe, bvid: media.bvid, cid: media.cid, lastTime: 0, playing: false, baseAt: 0,
+      };
+      iframe.src = biliEmbedSrc(backend, 0, false);
+      return backend;
     }
     if (media?.kind === 'youtube' && media.videoId) {
       const wrap = root.createDiv({ cls: 'elp-player-video' });
@@ -402,7 +418,7 @@ export class PlayerController {
   private now(): number {
     if (this.backend.kind === 'local') return this.backend.el.currentTime;
     if (this.backend.kind === 'youtube') return this.backend.lastTime;
-    if (this.backend.kind === 'bilibili') return this.backend.lastTime;
+    if (this.backend.kind === 'bilibili') return biliNow(this.backend);
     return 0;
   }
 
@@ -412,8 +428,7 @@ export class PlayerController {
       this.backend.el.playbackRate = this.rate;
       void this.backend.el.play();
     } else if (this.backend.kind === 'bilibili') {
-      this.backend.lastTime = t;
-      this.backend.iframe.src = biliEmbedSrc(this.backend.bvid, t, true);
+      biliLoad(this.backend, t, true);
     } else if (this.backend.kind === 'youtube') {
       this.yt('seekTo', [t, true]);
       this.yt('setPlaybackRate', [this.rate]);
@@ -425,7 +440,7 @@ export class PlayerController {
   private pause(): void {
     if (this.backend.kind === 'local') this.backend.el.pause();
     else if (this.backend.kind === 'youtube') this.yt('pauseVideo');
-    else if (this.backend.kind === 'bilibili') this.backend.iframe.src = biliEmbedSrc(this.backend.bvid, this.backend.lastTime, false);
+    else if (this.backend.kind === 'bilibili') biliLoad(this.backend, biliNow(this.backend), false);
     this.setPlayIcon(false);
   }
 
