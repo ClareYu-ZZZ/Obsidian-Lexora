@@ -4,6 +4,7 @@ import { fmtTime, paraRanges } from '@elp/core';
 import type ElpPlugin from './main';
 import { iconButton } from './ui';
 import { pronounce, stopPronounce } from './audio';
+import { fetchBiliStream } from './bilibili';
 import { openPlayerPane } from './player-pane';
 
 export async function loadLessonData(plugin: ElpPlugin, mdPath: string): Promise<LessonData | null> {
@@ -350,6 +351,8 @@ export class PlayerController {
         kind: 'bilibili', iframe, bvid: media.bvid, cid: media.cid, lastTime: 0, playing: false, baseAt: 0,
       };
       iframe.src = biliEmbedSrc(backend, 0, false);
+      // 桌面端：尝试升级为原生视频流（毫秒级定位 + 区间自动停）；失败无感保持 iframe 嵌入。
+      if (Platform.isDesktopApp) void this.upgradeBili(wrap, backend, media.bvid, media.cid);
       return backend;
     }
     if (media?.kind === 'youtube' && media.videoId) {
@@ -428,6 +431,41 @@ export class PlayerController {
       return { kind: 'local', el };
     }
     return { kind: 'tts' };
+  }
+
+  /** B 站原生流升级：playurl(html5 mp4) 直喂 <video>，与本地视频同级的精确控制，
+   *  模拟时钟随之退役。获取失败（风控/地区/版权）保持官方 iframe；
+   *  流地址有时效，播放中 error 先重取一次，再失败回退 iframe。 */
+  private async upgradeBili(wrap: HTMLElement, old: BilibiliBackend, bvid: string, cid?: number): Promise<void> {
+    try {
+      const { url } = await fetchBiliStream(this.plugin, bvid, cid);
+      if (this.backend !== old) return; // 面板已重建
+      const el = wrap.createEl('video', {
+        attr: { preload: 'metadata', playsinline: 'true', 'webkit-playsinline': 'true' },
+      });
+      el.src = url;
+      let retried = false;
+      el.onerror = () => {
+        void (async () => {
+          if (!retried) {
+            retried = true;
+            try {
+              const t = el.currentTime;
+              el.src = (await fetchBiliStream(this.plugin, bvid, cid)).url;
+              el.currentTime = t;
+              return;
+            } catch { /* 下面回退 */ }
+          }
+          if (this.backend.kind === 'local' && this.backend.el === el) {
+            el.remove();
+            old.iframe.style.display = '';
+            this.backend = old;
+          }
+        })();
+      };
+      old.iframe.style.display = 'none';
+      this.backend = { kind: 'local', el };
+    } catch { /* 保持 iframe 嵌入 */ }
   }
 
   /** 是否有可见画面（YouTube iframe 或本地视频）。 */

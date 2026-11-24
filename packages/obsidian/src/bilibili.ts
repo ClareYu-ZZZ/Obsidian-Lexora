@@ -217,6 +217,18 @@ function sec2ts(s: number): string {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${sec}`;
 }
 
+/** 原生视频流：platform=html5 的 mp4 直链，普通 <video> 可直接播放（无需 Referer 注入）。
+ *  仅桌面端可用（走 Node https）。清晰度以服务端实际下发为准（未登录通常 480p）。 */
+export async function fetchBiliStream(plugin: ElpPlugin, bvid: string, cid?: number): Promise<{ url: string; cid: number }> {
+  const c = cid ?? await fetchCid(plugin, bvid);
+  const q = await wbiSign(plugin, { bvid, cid: c, qn: 64, fnval: 1, fourk: 0, platform: 'html5', high_quality: 1 });
+  const r = await biliGet(`https://api.bilibili.com/x/player/wbi/playurl?${q}`, { ...(await biliHeaders(plugin)), referer: bilibiliWatchUrl(bvid) });
+  const j = safeJson(r) as { code?: number; data?: { durl?: { url: string }[] } } | null;
+  const url = j?.data?.durl?.[0]?.url;
+  if (!url) { diag('playurl', `code=${j?.code ?? r.status}`); throw new Error(`视频流获取失败（${j?.code ?? r.status}）`); }
+  return { url, cid: c };
+}
+
 /** 拉 CC 字幕并转 VTT（cid 一并返回，供内嵌播放器精确定位）。英文轨优先，人工轨优先于 AI 轨。 */
 export async function fetchBiliSubtitle(plugin: ElpPlugin, bvid: string): Promise<{ cid: number; vtt: string | null }> {
   const cid = await fetchCid(plugin, bvid);
