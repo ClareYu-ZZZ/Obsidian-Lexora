@@ -21,11 +21,26 @@ export function pickLocalMedia(plugin: ElpPlugin): void {
  * 读取系统选择器给的文件。Chromium 的 blob 读取在 macOS 受保护目录（桌面/文稿/
  * 下载等）上常抛 NotReadableError——桌面端自动降级为 Node fs 按绝对路径读。
  */
+function pickedFilePath(picked: File): string | undefined {
+  // 旧版 Electron 有 File.path；新版（Electron 32+，即较新的 Obsidian）已移除，
+  // 要走官方的 webUtils.getPathForFile。
+  const direct = (picked as File & { path?: string }).path;
+  if (direct) return direct;
+  const req = (window as Window & { require?: (m: string) => unknown }).require;
+  if (!Platform.isDesktopApp || !req) return undefined;
+  try {
+    const electron = req('electron') as { webUtils?: { getPathForFile?: (f: File) => string } };
+    return electron.webUtils?.getPathForFile?.(picked);
+  } catch {
+    return undefined;
+  }
+}
+
 async function readPickedFile(picked: File): Promise<ArrayBuffer> {
   try {
     return await picked.arrayBuffer();
   } catch (e) {
-    const abs = (picked as File & { path?: string }).path;
+    const abs = pickedFilePath(picked);
     const req = (window as Window & { require?: (m: string) => unknown }).require;
     if (abs && Platform.isDesktopApp && req) {
       const fs = req('fs/promises') as { readFile: (p: string) => Promise<Uint8Array> };
@@ -51,7 +66,7 @@ async function importPickedFile(plugin: ElpPlugin, picked: File): Promise<void> 
     return;
   }
   // 桌面端：若选中的就是 vault 内文件，不复制，直接用原文件
-  const abs = (picked as File & { path?: string }).path;
+  const abs = pickedFilePath(picked);
   const adapter = plugin.app.vault.adapter as { getBasePath?: () => string };
   const base = adapter.getBasePath?.();
   if (abs && base && abs.startsWith(base)) {
