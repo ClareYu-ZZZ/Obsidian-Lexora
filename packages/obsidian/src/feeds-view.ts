@@ -51,6 +51,8 @@ export class FeedsPanel {
   private feedStatus = new Map<string, { ok: boolean; count?: number; reason?: string; at: number }>();
   /** 最近一次成功的条目，拉取失败时兜底展示。 */
   private lastGood = new Map<string, FeedItem[]>();
+  /** 正在生成教程的条目 id（卡片显示进行态）。 */
+  private generating = new Set<string>();
 
   constructor(private plugin: ElpPlugin, private app: App) {}
 
@@ -223,9 +225,21 @@ export class FeedsPanel {
           '删除',
           () => void deleteLesson(this.plugin, existing).then(() => this.render()),
         ).open(), 'elp-row-del');
+    } else if (this.generating.has(item.id)) {
+      const busy = parent.createDiv({ cls: 'elp-gen-busy' });
+      busy.createDiv({ cls: 'elp-gen-busy-text', text: '生成中…' });
+      busy.createDiv({ cls: 'elp-gen-busy-bar' }).createDiv({ cls: 'elp-gen-busy-fill' });
     } else {
       const gen = parent.createEl('button', { cls: 'mod-cta elp-gen-btn', text: '生成教程' });
-      gen.onclick = (e) => { e.stopPropagation(); void this.generate(feed, item); };
+      gen.onclick = (e) => {
+        e.stopPropagation();
+        this.generating.add(item.id);
+        this.render();
+        void this.generate(feed, item).finally(() => {
+          this.generating.delete(item.id);
+          if (this.root?.isConnected) this.render();
+        });
+      };
     }
   }
 
@@ -582,86 +596,182 @@ class AddFeedModal extends Modal {
     }
   }
 
+  private srcTab: 'subs' | 'library' | 'local' = 'subs';
+  /** 推荐源连通检测结果（本弹窗生命周期内）。 */
+  private presetStatus = new Map<string, { ok: boolean; count?: number; reason?: string }>();
+  private testing = false;
+
   onOpen(): void {
+    this.modalEl.addClass('elp-addsrc');
     const { contentEl } = this;
+    contentEl.empty();
     contentEl.createEl('h3', { text: '添加来源' });
-    new Setting(contentEl)
-      .setName('地址')
-      .setDesc('RSS/Atom 链接、B 站 UP 主主页（space.bilibili.com/…），或 YouTube 频道页 /channel/UC… 链接。')
-      .addText((t) => t.setPlaceholder('https://…').onChange((v) => { this.url = v.trim(); }));
-    new Setting(contentEl)
-      .setName('名称（可选）')
-      .addText((t) => t.onChange((v) => { this.name = v.trim(); }));
 
-    new Setting(contentEl).addButton((b) =>
-      b.setButtonText('添加订阅').setCta().onClick(async () => {
-        if (!this.url) return;
-        if (await this.addFeed(this.url, this.name)) this.close();
-      }),
-    );
+    // ---- 页签 ----
+    const tabs = contentEl.createDiv({ cls: 'elp-addsrc-tabs' });
+    const mk = (id: typeof this.srcTab, label: string) => {
+      const b = tabs.createEl('button', { cls: 'elp-addsrc-tab' + (this.srcTab === id ? ' is-active' : ''), text: label });
+      b.onclick = () => { this.srcTab = id; this.contentEl.empty(); this.onOpen(); };
+    };
+    mk('subs', '订阅源');
+    mk('library', '精选课');
+    mk('local', '本地导入');
 
-    // ---- 推荐源：一键订阅 ----
-    const recHead = contentEl.createDiv({ cls: 'elp-modal-subhead' });
-    setIcon(recHead.createSpan(), 'sparkles');
-    recHead.createSpan({ text: '推荐源（点一下即订阅）' });
-    const recWrap = contentEl.createDiv({ cls: 'elp-preset-grid' });
+    const body = contentEl.createDiv({ cls: 'elp-addsrc-body' });
+    if (this.srcTab === 'subs') this.renderSubsTab(body);
+    else if (this.srcTab === 'library') this.renderLibraryTab(body);
+    else this.renderLocalTab(body);
+  }
+
+  // ---------- 页签一：订阅源 ----------
+  private renderSubsTab(body: HTMLElement): void {
+    const form = body.createDiv({ cls: 'elp-addsrc-form' });
+    const input = form.createEl('input', {
+      cls: 'elp-addsrc-input',
+      attr: { type: 'text', placeholder: '粘贴 RSS / B 站 UP 主主页 / YouTube 频道链接…' },
+    });
+    input.oninput = () => { this.url = input.value.trim(); };
+    const addBtn = form.createEl('button', { cls: 'mod-cta', text: '添加订阅' });
+    const hint = body.createDiv({ cls: 'elp-addsrc-hint', text: '添加时自动校验连通性与条目数，失败会直接给出原因' });
+    addBtn.onclick = async () => {
+      if (!this.url) return;
+      addBtn.disabled = true;
+      addBtn.setText('校验中…');
+      const ok = await this.addFeed(this.url, this.name).catch((e: Error) => { hint.setText(`✗ ${e.message}`); hint.addClass('is-fail'); return false; });
+      addBtn.disabled = false;
+      addBtn.setText('添加订阅');
+      if (ok) this.close();
+    };
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') addBtn.click(); });
+
     const existingUrls = new Set(this.plugin.feeds.list().map((f) => f.url));
     const existingNames = new Set(this.plugin.feeds.list().map((f) => f.name.toLowerCase()));
-    // 远端清单（控制台「推荐源」页维护，缓存 7 天）优先；拉不到回退内置
     const all = cachedRecommended(this.plugin) ?? PRESET_FEEDS;
     void refreshRecommended(this.plugin).then((changed) => {
-      if (changed && this.contentEl.isConnected) { this.contentEl.empty(); this.onOpen(); }
+      if (changed && this.contentEl.isConnected && this.srcTab === 'subs') { this.contentEl.empty(); this.onOpen(); }
     });
-    // 境外源（YouTube 等）仅在本机网络可直连时展示；探测结果 30 分钟缓存
     const isOverseas = (f: { url: string; hint: string; region?: string }): boolean =>
       f.region === 'global' || (f.region !== 'cn' && /youtube\.com|youtu\.be/.test(f.url));
     const ok = overseasState();
-    const presets = all.filter((f) => ok === true || !isOverseas(f));
-    if (presets.length < all.length) {
-      recWrap.createDiv({
-        cls: 'elp-preset-note',
-        text: ok === null ? '正在检测 YouTube 直连…可用时将显示境外源' : '已隐藏境外源（当前网络无法直连 YouTube；设置页可重新检测）',
-      });
-      if (ok === null) void probeOverseas(this.plugin).then(() => { if (this.contentEl.isConnected) { this.contentEl.empty(); this.onOpen(); } });
-    }
-    for (const p of presets) {
-      const chip = recWrap.createEl('button', { cls: 'elp-preset' });
-      chip.createSpan({ cls: 'elp-preset-name', text: p.name });
-      chip.createSpan({ cls: 'elp-preset-hint', text: p.hint });
-      if (existingUrls.has(p.url) || existingNames.has(p.name.toLowerCase())) {
-        chip.addClass('is-added');
-        chip.disabled = true;
-      }
-      chip.onclick = async () => {
-        chip.disabled = true;
-        chip.addClass('is-loading');
-        const ok = await this.addFeed(p.url, p.name);
-        chip.removeClass('is-loading');
-        if (ok) chip.addClass('is-added');
-        else chip.disabled = false;
-      };
-    }
+    const domestic = all.filter((f) => !isOverseas(f));
+    const overseas = all.filter(isOverseas);
 
-    // ---- 精选课（公版内容库）----
-    const libHead = contentEl.createDiv({ cls: 'elp-modal-subhead' });
-    setIcon(libHead.createSpan(), 'book-audio');
-    libHead.createSpan({ text: '精选课（公版内容库 · 试听免费）' });
-    const libWrap = contentEl.createDiv({ cls: 'elp-lib-list' });
+    const section = (title: string, items: typeof all, headExtra?: (h: HTMLElement) => void): void => {
+      if (!items.length) return;
+      const head = body.createDiv({ cls: 'elp-addsrc-sechead' });
+      head.createSpan({ cls: 'elp-addsrc-sectitle', text: title });
+      head.createSpan({ cls: 'elp-addsrc-count', text: String(items.length) });
+      headExtra?.(head);
+      const grid = body.createDiv({ cls: 'elp-preset-grid2' });
+      for (const pItem of items) {
+        const row = grid.createDiv({ cls: 'elp-preset-row' });
+        const st = this.presetStatus.get(pItem.url);
+        row.createSpan({ cls: 'elp-feed-dot' + (st ? (st.ok ? ' is-ok' : ' is-fail') : '') });
+        const mid = row.createDiv({ cls: 'elp-preset-mid' });
+        const added = existingUrls.has(pItem.url) || existingNames.has(pItem.name.toLowerCase());
+        mid.createDiv({ cls: 'elp-preset-name', text: pItem.name + (added ? ' ✓' : '') });
+        mid.createDiv({
+          cls: 'elp-preset-hint' + (st && !st.ok ? ' is-fail' : ''),
+          text: st ? (st.ok ? `${pItem.hint} · ${st.count} 条可用` : `${st.reason}`) : pItem.hint,
+        });
+        if (added) { row.addClass('is-added'); continue; }
+        const sub = row.createEl('button', { cls: 'elp-preset-sub', text: st && !st.ok ? '重试' : '订阅' });
+        sub.onclick = async () => {
+          if (st && !st.ok) { await this.testPreset(pItem); this.rerenderSubs(); return; }
+          sub.disabled = true;
+          sub.setText('…');
+          const okAdd = await this.addFeed(pItem.url, pItem.name);
+          if (okAdd) { this.rerenderSubs(); } else { sub.disabled = false; sub.setText('订阅'); }
+        };
+      }
+    };
+
+    section('推荐源 · 国内直连', domestic, (head) => {
+      const t = head.createEl('button', { cls: 'elp-addsrc-testall', text: this.testing ? '检测中…' : '⟳ 全部检测' });
+      t.onclick = async () => {
+        if (this.testing) return;
+        this.testing = true;
+        this.rerenderSubs();
+        const targets = [...domestic, ...(overseasState() === true ? overseas : [])];
+        // 并发 ≤3
+        let i = 0;
+        const worker = async (): Promise<void> => {
+          while (i < targets.length) {
+            const item = targets[i++];
+            await this.testPreset(item);
+            if (this.contentEl.isConnected && this.srcTab === 'subs') this.rerenderSubs();
+          }
+        };
+        await Promise.all([worker(), worker(), worker()]);
+        this.testing = false;
+        this.rerenderSubs();
+      };
+    });
+
+    if (overseas.length) {
+      if (ok === true) {
+        section('推荐源 · 境外', overseas, (head) => {
+          head.createSpan({ cls: 'elp-addsrc-badge is-ok', text: '✓ 本机可直连 YouTube' });
+        });
+      } else {
+        const head = body.createDiv({ cls: 'elp-addsrc-sechead' });
+        head.createSpan({ cls: 'elp-addsrc-sectitle', text: '推荐源 · 境外' });
+        head.createSpan({
+          cls: 'elp-addsrc-badge',
+          text: ok === null ? '检测 YouTube 直连中…' : '当前网络无法直连，已折叠（设置页可重新检测）',
+        });
+        if (ok === null) void probeOverseas(this.plugin).then(() => { if (this.contentEl.isConnected && this.srcTab === 'subs') this.rerenderSubs(); });
+      }
+    }
+  }
+
+  private rerenderSubs(): void {
+    if (!this.contentEl.isConnected) return;
+    this.contentEl.empty();
+    this.onOpen();
+  }
+
+  /** 单个推荐源连通检测：按源类型走与订阅一致的抓取路径。 */
+  private async testPreset(pItem: { url: string; name: string }): Promise<void> {
+    try {
+      let count = 0;
+      const mid = parseBilibiliSpace(pItem.url);
+      if (mid) {
+        const parsed = await fetchSpaceFeed(this.plugin, mid);
+        count = parsed.items.length;
+      } else {
+        const res = /youtube\.com/.test(pItem.url)
+          ? await ytGet(this.plugin, pItem.url)
+          : await requestUrl({ url: pItem.url, headers: { 'user-agent': 'Mozilla/5.0' }, throw: false });
+        if (res.status >= 400) throw new Error(`HTTP ${res.status}`);
+        count = parseFeed(res.text).items.length;
+      }
+      if (count === 0) this.presetStatus.set(pItem.url, { ok: false, reason: '连通但清单为空' });
+      else this.presetStatus.set(pItem.url, { ok: true, count });
+    } catch (e) {
+      const msg = (e as Error).message;
+      this.presetStatus.set(pItem.url, { ok: false, reason: /timeout|超时/i.test(msg) ? '超时（5s）—— 网络慢或被墙' : msg });
+    }
+  }
+
+  // ---------- 页签二：精选课 ----------
+  private renderLibraryTab(body: HTMLElement): void {
+    body.createDiv({ cls: 'elp-addsrc-hint', text: '公版内容库 · 全部可免费试听 · 生成教程按集合授权' });
+    const libWrap = body.createDiv({ cls: 'elp-lib-list' });
     libWrap.createDiv({ cls: 'elp-lib-empty', text: '加载中…' });
     void renderLibrarySection(this.plugin, libWrap, () => this.close());
+  }
 
-    // ---- 从本地获取 ----
-    const head = contentEl.createDiv({ cls: 'elp-modal-subhead' });
-    setIcon(head.createSpan(), 'folder');
-    head.createSpan({ text: '从本地获取' });
-    new Setting(contentEl)
+  // ---------- 页签三：本地导入 ----------
+  private renderLocalTab(body: HTMLElement): void {
+    new Setting(body)
       .setName('本地媒体文件')
       .setDesc('从电脑或手机选音视频文件（任意位置），转写或配字幕后生成教程')
       .addButton((b) => b.setButtonText('选择').onClick(() => {
         this.close();
         pickLocalMedia(this.plugin);
       }));
-    new Setting(contentEl)
+    new Setting(body)
       .setName('当前笔记')
       .setDesc('把编辑区打开的 Markdown 笔记变成教程')
       .addButton((b) => b.setButtonText('生成').onClick(() => {

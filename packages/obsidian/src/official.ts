@@ -95,69 +95,121 @@ export async function renderLibrarySection(
     wrap.createDiv({ cls: 'elp-lib-empty', text: '精选课暂未上线，敬请期待' });
     return;
   }
+
+  // 单实例试听播放器（带细进度条）
   let player: HTMLAudioElement | null = null;
-  let playingBtn: HTMLButtonElement | null = null;
+  let playingKey = '';
+  let cleanup: (() => void) | null = null;
   const stop = () => {
     player?.pause();
     player = null;
-    if (playingBtn) { playingBtn.setText('试听'); playingBtn = null; }
+    playingKey = '';
+    cleanup?.();
+    cleanup = null;
   };
-  for (const col of cols) {
-    const eps = episodesOf(col);
-    const row = wrap.createDiv({ cls: 'elp-lib-row' });
-    const info = row.createDiv({ cls: 'elp-lib-info' });
-    info.createDiv({ cls: 'elp-lib-title', text: col.title });
-    info.createDiv({
-      cls: 'elp-lib-meta',
-      text: `${col.source} · ${col.level} · ${eps.length} 集` + (col.freeGen ? ' · 免费' : ' · Pro'),
-    });
-    if (col.preview && eps.length > 0) {
-      const btn = row.createEl('button', { cls: 'elp-lib-btn', text: '试听' });
-      btn.onclick = () => {
-        if (playingBtn === btn) { stop(); return; }
-        stop();
-        player = new Audio(libraryFileUrl(col.id, eps[0].media.name));
-        void player.play().catch(() => new Notice('试听加载失败'));
-        player.onended = stop;
-        playingBtn = btn;
-        btn.setText('■ 停止');
+
+  const expanded = new Set<string>([cols[0].id]);
+
+  const render = () => {
+    stop();
+    wrap.empty();
+    for (const col of cols) {
+      const eps = episodesOf(col);
+      const box = wrap.createDiv({ cls: 'elp-libx' });
+      const head = box.createDiv({ cls: 'elp-libx-head' });
+      head.createDiv({ cls: 'elp-libx-icon', text: '📖' });
+      const info = head.createDiv({ cls: 'elp-libx-info' });
+      const tl = info.createDiv({ cls: 'elp-libx-titleline' });
+      tl.createSpan({ cls: 'elp-libx-title', text: col.title });
+      tl.createSpan({ cls: 'elp-tag', text: col.level });
+      tl.createSpan({ cls: 'elp-tag' + (col.freeGen ? ' is-done' : ' is-pro'), text: col.freeGen ? '免费生成' : '生成需 Pro' });
+      info.createDiv({ cls: 'elp-libx-meta', text: `${col.source} · ${eps.length} 集 · 公有领域` });
+      head.createSpan({ cls: 'elp-libx-fold', text: expanded.has(col.id) ? '▲ 收起' : '▼ 展开' });
+      head.onclick = () => {
+        if (expanded.has(col.id)) expanded.delete(col.id);
+        else expanded.add(col.id);
+        render();
       };
+      if (!expanded.has(col.id)) continue;
+
+      const list = box.createDiv({ cls: 'elp-libx-list' });
+      eps.forEach((ep, i) => {
+        const row = list.createDiv({ cls: 'elp-libx-ep' });
+        row.createSpan({ cls: 'elp-libx-no', text: String(i + 1).padStart(2, '0') });
+        const mid = row.createDiv({ cls: 'elp-libx-epmid' });
+        mid.createDiv({ cls: 'elp-libx-epname', text: ep.stem });
+        const barWrap = mid.createDiv({ cls: 'elp-libx-bar is-hidden' });
+        const bar = barWrap.createDiv({ cls: 'elp-libx-bar-fill' });
+
+        if (col.preview) {
+          const key = `${col.id}/${ep.stem}`;
+          const listenBtn = row.createEl('button', { cls: 'elp-lib-btn', text: playingKey === key ? '⏸ 停止' : '▶ 试听' });
+          listenBtn.onclick = (e) => {
+            e.stopPropagation();
+            if (playingKey === key) { stop(); listenBtn.setText('▶ 试听'); barWrap.addClass('is-hidden'); return; }
+            stop();
+            render(); // 复位其它行
+          };
+          if (playingKey !== key) {
+            listenBtn.onclick = (e) => {
+              e.stopPropagation();
+              stop();
+              player = new Audio(libraryFileUrl(col.id, ep.media.name));
+              void player.play().catch(() => new Notice('试听加载失败'));
+              playingKey = key;
+              listenBtn.setText('⏸ 停止');
+              barWrap.removeClass('is-hidden');
+              const au = player;
+              const onT = () => { if (au.duration) bar.style.width = `${(au.currentTime / au.duration) * 100}%`; };
+              au.addEventListener('timeupdate', onT);
+              au.onended = () => { stop(); listenBtn.setText('▶ 试听'); barWrap.addClass('is-hidden'); };
+              cleanup = () => {
+                au.removeEventListener('timeupdate', onT);
+                listenBtn.setText('▶ 试听');
+                barWrap.addClass('is-hidden');
+                bar.style.width = '0%';
+              };
+            };
+          }
+        }
+
+        const gen = row.createEl('button', { cls: 'elp-lib-btn is-primary', text: '生成教程' });
+        gen.onclick = async (e) => {
+          e.stopPropagation();
+          if (!col.freeGen && !plugin.license.pro) {
+            new Notice('该精选课需 Lexora Pro 解锁生成（试听免费）。设置中输入 license key，或先体验 14 天试用。', 8000);
+            return;
+          }
+          if (!ep.subtitle) { new Notice('该集缺少字幕文件，暂不能生成'); return; }
+          gen.disabled = true;
+          gen.setText('下载中…');
+          try {
+            const mediaRes = await requestUrl({ url: libraryFileUrl(col.id, ep.media.name) });
+            const subRes = await requestUrl({ url: libraryFileUrl(col.id, ep.subtitle.name) });
+            const dir = normalizePath(`${plugin.settings.lessonsFolder}/_library/${col.title}`);
+            if (!plugin.app.vault.getAbstractFileByPath(dir)) {
+              await plugin.app.vault.createFolder(dir).catch(() => undefined);
+            }
+            const mediaPath = `${dir}/${ep.media.name}`;
+            if (!plugin.app.vault.getAbstractFileByPath(mediaPath)) {
+              await plugin.app.vault.createBinary(mediaPath, mediaRes.arrayBuffer);
+            }
+            stop();
+            onGenerated();
+            await generateFromMedia(plugin, {
+              title: `${col.title} · ${ep.stem}`,
+              media: { kind: 'local', path: mediaPath },
+              subtitleText: subRes.text,
+            });
+          } catch (e2) {
+            new Notice(`生成失败:${(e2 as Error).message}`);
+          } finally {
+            gen.disabled = false;
+            gen.setText('生成教程');
+          }
+        };
+      });
     }
-    const gen = row.createEl('button', { cls: 'elp-lib-btn is-primary', text: '生成教程' });
-    gen.onclick = async () => {
-      if (!col.freeGen && !plugin.license.pro) {
-        new Notice('该精选课需 Lexora Pro 解锁生成（试听免费）。设置中输入 license key，或先体验 14 天试用。', 8000);
-        return;
-      }
-      const ep = eps[0];
-      if (!ep) { new Notice('该合集还没有可生成的音频'); return; }
-      if (!ep.subtitle) { new Notice('该集缺少字幕文件，暂不能生成'); return; }
-      gen.disabled = true;
-      gen.setText('下载中…');
-      try {
-        const mediaRes = await requestUrl({ url: libraryFileUrl(col.id, ep.media.name) });
-        const subRes = await requestUrl({ url: libraryFileUrl(col.id, ep.subtitle.name) });
-        const dir = normalizePath(`${plugin.settings.lessonsFolder}/_library/${col.title}`);
-        if (!plugin.app.vault.getAbstractFileByPath(dir)) {
-          await plugin.app.vault.createFolder(dir).catch(() => undefined);
-        }
-        const mediaPath = `${dir}/${ep.media.name}`;
-        if (!plugin.app.vault.getAbstractFileByPath(mediaPath)) {
-          await plugin.app.vault.createBinary(mediaPath, mediaRes.arrayBuffer);
-        }
-        stop();
-        onGenerated();
-        await generateFromMedia(plugin, {
-          title: `${col.title} · ${ep.stem}`,
-          media: { kind: 'local', path: mediaPath },
-          subtitleText: subRes.text,
-        });
-      } catch (e) {
-        new Notice(`生成失败:${(e as Error).message}`);
-      } finally {
-        gen.disabled = false;
-        gen.setText('生成教程');
-      }
-    };
-  }
+  };
+  render();
 }

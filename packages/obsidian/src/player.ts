@@ -717,26 +717,52 @@ export class PlayerController {
     if (!this.sentenceEl) return;
     this.sentenceEl.empty();
     if (!seg) { this.sentenceEl.setText('点击任意 ▶ 跳到对应句子，默认单句循环'); return; }
-    const time = seg.start !== undefined ? `[${fmtTime(seg.start)}] ` : '';
-    this.sentenceEl.createSpan({ cls: 'elp-player-time', text: time });
-    this.sentenceEl.createSpan({ text: seg.text });
+    const head = this.sentenceEl.createDiv({ cls: 'elp-sentence-head' });
+    head.createSpan({
+      cls: 'elp-sentence-pos',
+      text: `第 ${this.current + 1} / ${this.data.segments.length} 句` + (seg.start !== undefined ? ` · [${fmtTime(seg.start)}]` : ''),
+    });
+    this.sentenceEl.createDiv({ cls: 'elp-sentence-text', text: seg.text });
   }
 
   private buildControls(root: HTMLElement): void {
+    // ---- 顶部标题行（视频之上）：标题 + 来源·句数 徽章 ----
+    const header = root.createDiv({ cls: 'elp-pane-header' });
+    header.createSpan({ cls: 'elp-pane-header-title', text: this.data.title });
+    const chip: string[] = [];
+    if (this.data.source.feedName) chip.push(this.data.source.feedName);
+    chip.push(`${this.data.segments.length} 句`);
+    if (this.backend.kind === 'tts') chip.push('TTS');
+    header.createSpan({ cls: 'elp-pane-header-chip', text: chip.join(' · ') });
+    root.prepend(header);
+
     // 音频/TTS 课：大封面占位（参考播客阅读器）
     if (!this.hasVideo()) {
       const art = root.createDiv({ cls: 'elp-pane-art' });
       setIcon(art.createSpan(), this.backend.kind === 'tts' ? 'type' : 'headphones');
     }
 
-    root.createDiv({ cls: 'elp-pane-title', text: this.data.title });
-    const sub: string[] = [];
-    if (this.data.source.feedName) sub.push(this.data.source.feedName);
-    sub.push(`${this.data.segments.length} 句`);
-    if (this.backend.kind === 'tts') sub.push('文本课 · TTS 朗读');
-    root.createDiv({ cls: 'elp-pane-sub', text: sub.join(' · ') });
+    // ---- 当前句卡：句序·时间 + 句文 ----
+    this.sentenceEl = root.createDiv({ cls: 'elp-pane-sentence' + (subsHiddenDefault || this.backend.kind === 'tts' ? ' is-hidden' : '') });
+    this.updateSentence();
 
-    // ---- 主走带：上一句 / 播放 / 下一句 / 循环 ----
+    // ---- 全文转写区（当前句高亮+滚动跟随；文本课常驻，音视频课由字幕模式切换） ----
+    {
+      const wrap = root.createDiv({ cls: 'elp-pane-transcript' + (this.backend.kind !== 'tts' ? ' elp-ts-scrollbox' : '') });
+      const ranges = paraRanges(this.data.segments);
+      ranges.forEach((p, ri) => {
+        const paraEl = wrap.createDiv({ cls: 'elp-ts-para' });
+        const endIdx = ranges[ri + 1]?.firstSegIdx ?? this.data.segments.length;
+        for (let i = p.firstSegIdx; i < endIdx; i++) {
+          const sEl = paraEl.createSpan({ cls: 'elp-ts-sent', text: this.data.segments[i].text + ' ' });
+          sEl.setAttr('data-idx', String(i));
+          sEl.onclick = () => this.playSegment(i);
+        }
+      });
+      this.transcriptEl = wrap;
+    }
+
+    // ---- 走带：上一句/播放/下一句 ｜ 循环/连播/盲听/字幕模式/倍速（单行紧凑，按设计板 ⑦） ----
     const bar = root.createDiv({ cls: 'elp-pane-transport' });
     iconButton(bar, 'skip-back', '上一句', () => {
       this.playSegment(Math.max(0, this.current <= 0 ? 0 : this.current - 1));
@@ -753,6 +779,7 @@ export class PlayerController {
     iconButton(bar, 'skip-forward', '下一句', () => {
       this.playSegment(Math.min(this.data.segments.length - 1, this.current + 1));
     }, 'elp-pane-side');
+    bar.createSpan({ cls: 'elp-pane-divider' });
     const loopBtn = bar.createEl('button', {
       cls: 'elp-icon-btn elp-pane-side elp-player-loop',
       attr: { 'aria-label': '单句循环', title: '单句循环' },
@@ -771,6 +798,49 @@ export class PlayerController {
       chainBtn.addClass('is-on');
     }, 'elp-pane-side');
     this.chainBtn = chainBtn;
+
+    // 盲听（隐藏字幕）
+    const capBtn = bar.createEl('button', {
+      cls: 'elp-icon-btn elp-pane-side' + (subsHiddenDefault ? ' is-dim' : ''),
+      attr: { 'aria-label': '显示/隐藏字幕（盲听）', title: '显示/隐藏字幕' },
+    });
+    const capIcon = capBtn.createSpan();
+    setIcon(capIcon, subsHiddenDefault ? 'captions-off' : 'captions');
+    capBtn.onclick = () => {
+      subsHiddenDefault = !subsHiddenDefault;
+      this.applySubtitleMode();
+      setIcon(capIcon, subsHiddenDefault ? 'captions-off' : 'captions');
+      capBtn.toggleClass('is-dim', subsHiddenDefault);
+    };
+
+    // 字幕模式：单句 ⇄ 全文滚动（文本课本来就是全文，不需要）
+    if (this.backend.kind !== 'tts') {
+      const modeBtn = bar.createEl('button', {
+        cls: 'elp-icon-btn elp-pane-side' + (subsScrollDefault ? ' is-on' : ''),
+        attr: { 'aria-label': '字幕模式：单句 / 全文滚动', title: '字幕模式：单句 / 全文滚动' },
+      });
+      const modeIcon = modeBtn.createSpan();
+      setIcon(modeIcon, 'scroll-text');
+      modeBtn.onclick = () => {
+        subsScrollDefault = !subsScrollDefault;
+        modeBtn.toggleClass('is-on', subsScrollDefault);
+        this.applySubtitleMode();
+        this.updateSentence();
+      };
+    }
+
+    {
+      const speed = bar.createEl('select', { cls: 'dropdown elp-player-speed' });
+      for (const r of [0.75, 0.9, 1, 1.25]) {
+        const opt = speed.createEl('option', { text: `${r}×`, value: String(r) });
+        if (r === 1) opt.selected = true;
+      }
+      speed.onchange = () => {
+        this.rate = parseFloat(speed.value);
+        if (this.backend.kind === 'local') this.backend.el.playbackRate = this.rate;
+        else this.yt('setPlaybackRate', [this.rate]);
+      };
+    }
 
     // ---- 进度条（本地/远程音视频才有真实时间轴） ----
     if (this.backend.kind === 'local') {
@@ -792,84 +862,27 @@ export class PlayerController {
       };
     }
 
-    // ---- 次级行：速度 / 录音 / 我的跟读 ----
-    const row2 = root.createDiv({ cls: 'elp-pane-row2' });
-    {
-      const speed = row2.createEl('select', { cls: 'dropdown elp-player-speed' });
-      for (const r of [0.75, 0.9, 1, 1.25]) {
-        const opt = speed.createEl('option', { text: `${r}×`, value: String(r) });
-        if (r === 1) opt.selected = true;
-      }
-      speed.onchange = () => {
-        this.rate = parseFloat(speed.value);
-        if (this.backend.kind === 'local') this.backend.el.playbackRate = this.rate;
-        else this.yt('setPlaybackRate', [this.rate]);
-      };
-    }
-    this.recBtn = row2.createEl('button', {
-      cls: 'elp-icon-btn elp-rec-btn',
+    // ---- 跟读录音卡（按设计板 ⑦：红圆麦克风 + 说明 + 我的跟读） ----
+    const recRow = root.createDiv({ cls: 'elp-rec-row' });
+    this.recBtn = recRow.createEl('button', {
+      cls: 'elp-rec-btn',
       attr: { 'aria-label': '跟读录音（再次点击结束）', title: '跟读录音' },
     });
     const recIcon = this.recBtn.createSpan();
     setIcon(recIcon, 'mic');
     this.recBtn.onclick = () => void this.toggleRecord();
-    this.mineBtn = row2.createEl('button', {
-      cls: 'elp-icon-btn elp-mine-btn is-hidden',
+    const recMid = recRow.createDiv({ cls: 'elp-rec-mid' });
+    recMid.createDiv({ cls: 'elp-rec-title', text: '跟读本句' });
+    recMid.createDiv({ cls: 'elp-rec-sub', text: '录完自动与原声对比' });
+    this.mineBtn = recRow.createEl('button', {
+      cls: 'elp-mine-btn is-hidden',
       attr: { 'aria-label': '播放我的跟读（与原声对比）', title: '我的跟读' },
     });
+    this.mineBtn.createSpan({ text: '我的 ' });
     const mineIcon = this.mineBtn.createSpan();
-    setIcon(mineIcon, 'user-round');
+    setIcon(mineIcon, 'play');
     this.mineBtn.onclick = () => void this.playMine();
 
-    // 隐藏字幕（盲听训练）
-    const capBtn = row2.createEl('button', {
-      cls: 'elp-icon-btn' + (subsHiddenDefault ? ' is-dim' : ''),
-      attr: { 'aria-label': '显示/隐藏字幕', title: '显示/隐藏字幕' },
-    });
-    const capIcon = capBtn.createSpan();
-    setIcon(capIcon, subsHiddenDefault ? 'captions-off' : 'captions');
-    capBtn.onclick = () => {
-      subsHiddenDefault = !subsHiddenDefault;
-      this.applySubtitleMode();
-      setIcon(capIcon, subsHiddenDefault ? 'captions-off' : 'captions');
-      capBtn.toggleClass('is-dim', subsHiddenDefault);
-    };
-
-    // 字幕模式：单句 ⇄ 全文滚动（文本课本来就是全文，不需要）
-    if (this.backend.kind !== 'tts') {
-      const modeBtn = row2.createEl('button', {
-        cls: 'elp-icon-btn' + (subsScrollDefault ? ' is-on' : ''),
-        attr: { 'aria-label': '字幕模式：单句 / 全文滚动', title: '字幕模式：单句 / 全文滚动' },
-      });
-      const modeIcon = modeBtn.createSpan();
-      setIcon(modeIcon, 'scroll-text');
-      modeBtn.onclick = () => {
-        subsScrollDefault = !subsScrollDefault;
-        modeBtn.toggleClass('is-on', subsScrollDefault);
-        this.applySubtitleMode();
-        this.updateSentence();
-      };
-    }
-
-    // ---- 当前句 ----
-    this.sentenceEl = root.createDiv({ cls: 'elp-pane-sentence' + (subsHiddenDefault || this.backend.kind === 'tts' ? ' is-hidden' : '') });
-    this.updateSentence();
-
-    // ---- 全文转写区（当前句高亮+滚动跟随；文本课常驻，音视频课由字幕模式切换） ----
-    {
-      const wrap = root.createDiv({ cls: 'elp-pane-transcript' + (this.backend.kind !== 'tts' ? ' elp-ts-scrollbox' : '') });
-      const ranges = paraRanges(this.data.segments);
-      ranges.forEach((p, ri) => {
-        const paraEl = wrap.createDiv({ cls: 'elp-ts-para' });
-        const endIdx = ranges[ri + 1]?.firstSegIdx ?? this.data.segments.length;
-        for (let i = p.firstSegIdx; i < endIdx; i++) {
-          const sEl = paraEl.createSpan({ cls: 'elp-ts-sent', text: this.data.segments[i].text + ' ' });
-          sEl.setAttr('data-idx', String(i));
-          sEl.onclick = () => this.playSegment(i);
-        }
-      });
-      this.transcriptEl = wrap;
-    }
     this.applySubtitleMode();
   }
 
