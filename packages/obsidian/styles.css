@@ -1997,3 +1997,6 @@ body.elp-style-background .elp-word {
 .elp-feeds .elp-card-actions .elp-card-ext svg,
 .elp-feeds .elp-card-actions .elp-row-del svg { width: 13px; height: 13px; }
 .elp-feeds .elp-tag { font-size: 10px; padding: 2px 8px; border-radius: 999px; }
+
+/* 文本课转写盒：固定高度流动字幕（主交互区，略高于视频字幕盒） */
+.elp-pane-inner .elp-ts-scrollbox.elp-ts-tts { max-height: 300px; }

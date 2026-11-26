@@ -97,23 +97,13 @@ export function registerPlayer(plugin: ElpPlugin): void {
         const label = labels[k + 1] ?? '';
         if (label) item.createSpan({ cls: 'elp-check-text', text: label });
         item.onclick = () => {
-          // 点击时现取区块信息（渲染时的常因虚拟化失效），并带上长难句编号兜底锚点
+          // 点击时现取区块信息（渲染时的常因虚拟化失效），并带上长难句编号锚点。
+          // 阅读模式每个块各包一层 wrapper，所以要逐级向上、在每一级扫前序兄弟找 `N.` 标题。
           const fresh = ctx.getSectionInfo(el);
-          let headingNo: number | null = null;
-          let blk: Element | null = el;
-          while (blk && headingNo === null) {
-            const h = blk.querySelector?.('h1,h2,h3,h4,h5,h6');
-            if (h) {
-              const m = (h.textContent ?? '').trim().match(/^(\d+)\./);
-              if (m) headingNo = parseInt(m[1], 10);
-              break;
-            }
-            blk = blk.previousElementSibling;
-          }
           void toggleFollowMark(plugin, ctx.sourcePath, k, item, {
             lineStart: fresh?.lineStart ?? info?.lineStart,
             lineEnd: fresh?.lineEnd ?? info?.lineEnd,
-            headingNo,
+            headingNo: findHeadingNo(node),
           });
         };
       });
@@ -121,8 +111,34 @@ export function registerPlayer(plugin: ElpPlugin): void {
   });
 }
 
+/** 从某个渲染节点出发找它所属长难句的编号（`### N.` 标题）。
+ *  逐级向上，每一级从近到远扫前序兄弟；取兄弟子树里最后一个（最近的）编号标题。 */
+function findHeadingNo(start: Element): number | null {
+  const parse = (h: Element): number | null => {
+    const m = (h.textContent ?? '').trim().match(/^(\d+)\./);
+    return m ? parseInt(m[1], 10) : null;
+  };
+  let cur: Element | null = start;
+  while (cur) {
+    for (let sib = cur.previousElementSibling; sib; sib = sib.previousElementSibling) {
+      if (/^H[1-6]$/.test(sib.tagName)) {
+        const n = parse(sib);
+        if (n !== null) return n;
+        continue;
+      }
+      const hs = sib.querySelectorAll('h1,h2,h3,h4,h5,h6');
+      for (let i = hs.length - 1; i >= 0; i--) {
+        const n = parse(hs[i]);
+        if (n !== null) return n;
+      }
+    }
+    cur = cur.parentElement;
+  }
+  return null;
+}
+
 /** 切换 学习笔记 里某条跟读行的第 k 个 [ ]/[x]，回写文件。
- *  定位三级兜底：区块行号 → 所属长难句标题号（### N.）→ 全文首条跟读行。 */
+ *  定位：区块行号 → 所属长难句标题号（### N.）；都失败则放弃并提示，绝不写别的行。 */
 async function toggleFollowMark(
   plugin: ElpPlugin, sourcePath: string, k: number, item: HTMLElement,
   loc: { lineStart?: number; lineEnd?: number; headingNo?: number | null },
@@ -147,8 +163,11 @@ async function toggleFollowMark(
         }
       }
     }
-    if (target < 0) target = lines.findIndex(isFollow);
-    if (target < 0) return content;
+    // 绝不退化为「全文第一条」——写错别人的句子比写不进更糟
+    if (target < 0) {
+      new Notice('没定位到这一句的跟读行，请切到编辑模式勾选（或滚动后重试）');
+      return content;
+    }
     let count = -1;
     lines[target] = lines[target].replace(/\[( |x)\]/gi, (full, c: string) => {
       count++;
@@ -758,7 +777,7 @@ export class PlayerController {
 
     // ---- 全文转写区（当前句高亮+滚动跟随；文本课常驻，音视频课由字幕模式切换） ----
     {
-      const wrap = root.createDiv({ cls: 'elp-pane-transcript' + (this.backend.kind !== 'tts' ? ' elp-ts-scrollbox' : '') });
+      const wrap = root.createDiv({ cls: 'elp-pane-transcript elp-ts-scrollbox' + (this.backend.kind === 'tts' ? ' elp-ts-tts' : '') });
       const ranges = paraRanges(this.data.segments);
       ranges.forEach((p, ri) => {
         const paraEl = wrap.createDiv({ cls: 'elp-ts-para' });
@@ -899,9 +918,10 @@ export class PlayerController {
   /** 按 隐藏字幕 + 字幕模式 决定单句区/全文区的可见性。 */
   private applySubtitleMode(): void {
     const tts = this.backend.kind === 'tts';
-    // 设计板 ⑦：滚动模式下句卡与字幕盒同时显示；单句模式只显示句卡；盲听全隐藏（文本课转写常驻）
+    // 设计板 ⑦：滚动模式下句卡与字幕盒同显；单句模式只句卡；盲听全隐藏。
+    // 文本课的转写盒是主交互区（点句朗读），常驻固定高度滚动，只受盲听开关影响。
     this.sentenceEl?.toggleClass('is-hidden', subsHiddenDefault || tts);
-    this.transcriptEl?.toggleClass('is-hidden', tts ? false : (subsHiddenDefault || !subsScrollDefault));
+    this.transcriptEl?.toggleClass('is-hidden', tts ? subsHiddenDefault : (subsHiddenDefault || !subsScrollDefault));
   }
 
   // ---------- 跟读录音 ----------
