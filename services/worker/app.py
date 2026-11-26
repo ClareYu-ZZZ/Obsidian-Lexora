@@ -419,7 +419,13 @@ def _run_transcribe(job: Job, media: Path, language: str) -> None:
         job.result_path = out
         job.progress = 1.0
         job.status = "done"
-        _record(job.type, job.caller, job.created, True)
+        # 详情记录音频时长与实时倍率（耗时÷时长），管理台一眼判断性能是否达标
+        try:
+            dur = float(total)  # noqa: F821 — FAKE 分支无 total，走 except
+            ratio = (time.time() - job.created) / max(dur, 1.0)
+            _record(job.type, job.caller, job.created, True, f"音频 {int(dur // 60)}m{int(dur % 60):02d}s · {ratio:.2f}x 实时")
+        except Exception:  # noqa: BLE001
+            _record(job.type, job.caller, job.created, True)
     except Exception as e:  # noqa: BLE001 — job errors surface to the client
         job.status = "failed"
         job.error = str(e)
@@ -527,7 +533,13 @@ def _run_ytmedia(job: Job, video_id: str, want_video: bool) -> None:
         job.result_path = out
         job.progress = 1.0
         job.status = "done"
-        _record(job.type, job.caller, job.created, True)
+        # 详情记录音频时长与实时倍率（耗时÷时长），管理台一眼判断性能是否达标
+        try:
+            dur = float(total)  # noqa: F821 — FAKE 分支无 total，走 except
+            ratio = (time.time() - job.created) / max(dur, 1.0)
+            _record(job.type, job.caller, job.created, True, f"音频 {int(dur // 60)}m{int(dur % 60):02d}s · {ratio:.2f}x 实时")
+        except Exception:  # noqa: BLE001
+            _record(job.type, job.caller, job.created, True)
     except Exception as e:  # noqa: BLE001
         job.status = "failed"
         job.error = str(e)[:300]
