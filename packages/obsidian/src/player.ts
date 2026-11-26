@@ -602,6 +602,7 @@ export class PlayerController {
   /** 播放一句（endIdx 给定时播放 [idx..endIdx] 整个区间，如段落 ▶）。 */
   playSegment(idx: number, endIdx?: number): void {
     this.clearChain();
+    this.loopCount = 0;
     const seg = this.data.segments[idx];
     if (!seg) return;
     const lastIdx = Math.min(Math.max(endIdx ?? idx, idx), this.data.segments.length - 1);
@@ -641,8 +642,10 @@ export class PlayerController {
       }
       if (t >= end - 0.05) {
         if (this.loop) {
+          this.loopCount += 1;
           this.seekPlay(Math.max(0, start - 0.05));
           if (this.current !== this.rangeStart) { this.current = this.rangeStart; this.updateSentence(); }
+          else this.updateSentence();
         } else { this.pause(); this.stopWatcher(); }
       }
     }, 100);
@@ -678,6 +681,8 @@ export class PlayerController {
   }
 
   private progressSaveTimer: number | null = null;
+  /** 当前句已循环次数（句卡右上角「循环 ×N」）。 */
+  private loopCount = 0;
 
   /** 记录「学到第几句」，3 秒节流落盘；学习笔记页的「继续上次」据此恢复。 */
   private recordProgress(): void {
@@ -722,6 +727,7 @@ export class PlayerController {
       cls: 'elp-sentence-pos',
       text: `第 ${this.current + 1} / ${this.data.segments.length} 句` + (seg.start !== undefined ? ` · [${fmtTime(seg.start)}]` : ''),
     });
+    if (this.loop) head.createSpan({ cls: 'elp-sentence-loop', text: this.loopCount > 0 ? `循环 ×${this.loopCount}` : '循环' });
     this.sentenceEl.createDiv({ cls: 'elp-sentence-text', text: seg.text });
   }
 
@@ -889,9 +895,9 @@ export class PlayerController {
   /** 按 隐藏字幕 + 字幕模式 决定单句区/全文区的可见性。 */
   private applySubtitleMode(): void {
     const tts = this.backend.kind === 'tts';
-    const scroll = tts || subsScrollDefault;
-    this.sentenceEl?.toggleClass('is-hidden', subsHiddenDefault || scroll);
-    this.transcriptEl?.toggleClass('is-hidden', subsHiddenDefault ? !tts : !scroll);
+    // 设计板 ⑦：滚动模式下句卡与字幕盒同时显示；单句模式只显示句卡；盲听全隐藏（文本课转写常驻）
+    this.sentenceEl?.toggleClass('is-hidden', subsHiddenDefault || tts);
+    this.transcriptEl?.toggleClass('is-hidden', tts ? false : (subsHiddenDefault || !subsScrollDefault));
   }
 
   // ---------- 跟读录音 ----------

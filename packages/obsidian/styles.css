@@ -1830,3 +1830,97 @@ body.elp-style-background .elp-word {
   animation: elp-indeterminate 1.2s ease-in-out infinite;
 }
 @keyframes elp-indeterminate { 0% { margin-left: -40%; } 100% { margin-left: 100%; } }
+
+/* ================================================================
+   0.30.1 像素级对齐设计板 ⑦：压平 Obsidian 默认按钮风格
+   ================================================================ */
+
+/* ---- 面板整体：12px 纵向节奏 ---- */
+.elp-pane-inner { display: flex; flex-direction: column; gap: 12px; }
+.elp-pane-inner > * { margin: 0 !important; }
+
+/* ---- 标题行：左对齐小字号（覆盖主题的居中/大标题） ---- */
+.elp-pane-header { padding: 0; text-align: left; }
+.elp-pane-header-title {
+  font-size: 13px !important; font-weight: 700; text-align: left;
+  color: var(--text-normal); line-height: 1.4;
+}
+
+/* ---- 视频圆角 ---- */
+.elp-pane-inner .elp-player-video video,
+.elp-pane-inner .elp-player-video iframe { border-radius: 10px; }
+
+/* ---- 当前句卡：独立卡片 + 强调描边 ---- */
+.elp-pane-inner .elp-pane-sentence {
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-left: 1px solid var(--background-modifier-border);
+  border-radius: 10px; padding: 12px 14px; text-align: left;
+}
+.elp-sentence-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.elp-sentence-pos { font-size: 11px; font-weight: 600; color: var(--interactive-accent); }
+.elp-sentence-loop { font-size: 11px; color: var(--text-muted); }
+.elp-sentence-text { font-size: 14px; line-height: 1.65; color: var(--text-normal); }
+
+/* ---- 卷轴字幕盒 ---- */
+.elp-pane-inner .elp-ts-scrollbox {
+  max-height: 150px; padding: 10px 14px;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 10px;
+}
+.elp-ts-scrollbox .elp-ts-sent {
+  display: block; font-size: 12.5px; line-height: 1.55; padding: 2px 0;
+  border-radius: 6px; color: var(--text-muted);
+}
+.elp-ts-scrollbox .elp-ts-sent.is-current {
+  color: var(--text-normal); background: var(--background-modifier-hover);
+  padding: 4px 8px; margin: 0 -8px;
+}
+
+/* ---- 走带：扁平方按钮（干掉主题的凸起和阴影） ---- */
+.elp-pane-inner .elp-pane-transport { gap: 8px; }
+.elp-pane-inner .elp-pane-transport button {
+  box-shadow: none !important;
+  background: transparent;
+  border: 1px solid var(--background-modifier-border);
+}
+.elp-pane-inner .elp-pane-transport .elp-pane-side {
+  width: 38px; height: 38px; border-radius: 10px;
+  color: var(--text-normal);
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.elp-pane-inner .elp-pane-transport .elp-pane-side svg { width: 15px; height: 15px; }
+.elp-pane-inner .elp-pane-transport .elp-pane-play {
+  width: 48px; height: 48px; border-radius: 12px; border: none;
+  background: var(--interactive-accent); color: var(--text-on-accent);
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.elp-pane-inner .elp-pane-transport .elp-pane-play svg { width: 18px; height: 18px; }
+.elp-pane-inner .elp-pane-transport .elp-icon-btn.is-on {
+  color: var(--interactive-accent);
+  background: var(--background-secondary);
+  border-color: var(--interactive-accent);
+}
+.elp-pane-inner .elp-pane-transport .elp-player-speed {
+  height: 38px; min-height: 38px; border-radius: 10px; font-size: 11px;
+  background: transparent; border: 1px solid var(--background-modifier-border);
+  box-shadow: none; padding: 0 8px;
+}
+
+/* ---- 录音/打卡卡片：统一扁平 ---- */
+.elp-rec-row, .elp-checkin {
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 10px;
+}
+.elp-rec-row button, .elp-checkin button { box-shadow: none !important; }
+
+/* ---- 弹窗与主页按钮压平 ---- */
+.elp-addsrc button, .elp-feeds button, .elp-notes button {
+  box-shadow: none !important;
+}
+.elp-addsrc .mod-cta, .elp-feeds .mod-cta {
+  background: var(--interactive-accent); color: var(--text-on-accent);
+  border: none; border-radius: 8px; font-weight: 700;
+}
