@@ -740,6 +740,10 @@ export class PlayerController {
     chip.push(`${this.data.segments.length} 句`);
     if (this.backend.kind === 'tts') chip.push('TTS');
     header.createSpan({ cls: 'elp-pane-header-chip', text: chip.join(' · ') });
+    iconButton(header, 'file-text', '打开学习笔记', () => {
+      const f = this.plugin.app.vault.getAbstractFileByPath(this.mdPath);
+      if (f instanceof TFile) void this.plugin.app.workspace.getLeaf(false).openFile(f, { state: { mode: 'preview' } });
+    }, 'elp-pane-note');
     root.prepend(header);
 
     // 音频/TTS 课：大封面占位（参考播客阅读器）

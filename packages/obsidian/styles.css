@@ -1924,3 +1924,21 @@ body.elp-style-background .elp-word {
   background: var(--interactive-accent); color: var(--text-on-accent);
   border: none; border-radius: 8px; font-weight: 700;
 }
+
+
+/* ---- 0.30.2 修根因：面板子项全宽拉伸 ---- */
+.elp-pane-inner { align-items: stretch !important; }
+.elp-pane-inner > * { width: auto; }
+.elp-pane-inner .elp-pane-head { display: none; } /* 打开笔记按钮已并入标题行 */
+.elp-pane-header { width: 100%; }
+.elp-pane-header .elp-pane-note {
+  width: 28px; height: 28px; border-radius: 8px; flex-shrink: 0; padding: 0;
+  background: transparent; border: 1px solid var(--background-modifier-border);
+  box-shadow: none; color: var(--text-muted);
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.elp-pane-header .elp-pane-note svg { width: 13px; height: 13px; }
+/* 字幕盒当前句：纯药丸底，不要底部划线 */
+.elp-ts-scrollbox .elp-ts-sent.is-current { box-shadow: none; }
+/* 走带整体居中但自身占满行 */
+.elp-pane-inner .elp-pane-transport { width: 100%; justify-content: center; }
