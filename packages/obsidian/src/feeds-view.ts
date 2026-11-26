@@ -583,7 +583,9 @@ class AddFeedModal extends Modal {
     const existingNames = new Set(this.plugin.feeds.list().map((f) => f.name.toLowerCase()));
     // 远端清单（控制台「推荐源」页维护，缓存 7 天）优先；拉不到回退内置
     const all = cachedRecommended(this.plugin) ?? PRESET_FEEDS;
-    void refreshRecommended(this.plugin);
+    void refreshRecommended(this.plugin).then((changed) => {
+      if (changed && this.contentEl.isConnected) { this.contentEl.empty(); this.onOpen(); }
+    });
     // 境外源（YouTube 等）仅在本机网络可直连时展示；探测结果 30 分钟缓存
     const isOverseas = (f: { url: string; hint: string; region?: string }): boolean =>
       f.region === 'global' || (f.region !== 'cn' && /youtube\.com|youtu\.be/.test(f.url));

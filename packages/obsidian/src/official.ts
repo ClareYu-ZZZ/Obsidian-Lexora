@@ -25,10 +25,11 @@ export function cachedRecommended(plugin: ElpPlugin): PresetFeed[] | null {
   return c.feeds;
 }
 
-/** 后台刷新推荐源缓存（每天最多一次）。 */
-export async function refreshRecommended(plugin: ElpPlugin): Promise<void> {
+/** 刷新推荐源缓存。打开订阅弹窗时调用（10 分钟节流），控制台「保存并发布」后用户下次打开即可见。
+ *  返回清单是否有变化（供调用方决定要不要重渲染）。 */
+export async function refreshRecommended(plugin: ElpPlugin): Promise<boolean> {
   const c = plugin.settings.officialFeedsCache;
-  if (c && Date.now() - c.at < DAY) return;
+  if (c && Date.now() - c.at < 10 * 60_000) return false;
   try {
     const res = await requestUrl({ url: `${OFFICIAL_BASE}/v1/recommended-feeds`, throw: false });
     const feeds = res.status === 200 ? res.json?.feeds : null;
@@ -46,8 +47,11 @@ export async function refreshRecommended(plugin: ElpPlugin): Promise<void> {
           : (/youtube\.com|youtu\.be/.test(String(f.url)) ? 'global' as const : 'cn' as const),
       })),
     };
+    const changed = JSON.stringify(plugin.settings.officialFeedsCache.feeds) !== JSON.stringify(c?.feeds ?? null);
     await plugin.saveSettings();
+    return changed;
   } catch { /* 静默 */ }
+  return false;
 }
 
 export function libraryFileUrl(cid: string, name: string): string {
