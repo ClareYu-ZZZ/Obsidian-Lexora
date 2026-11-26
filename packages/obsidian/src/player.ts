@@ -458,6 +458,7 @@ export class PlayerController {
       old.iframe.src = 'about:blank';
       old.iframe.style.display = 'none';
       this.backend = { kind: 'local', el };
+      wrap.createDiv({ cls: 'elp-stream-badge', text: '高精度流' });
     } catch (e) {
       console.warn('[lexora] B 站原生流不可用，保持官方嵌入播放：', e);
     } finally {

@@ -47,6 +47,10 @@ export class FeedsPanel {
   private loading = false;
   /** 非空 = 阅读详情模式。 */
   private detail: FeedItem | null = null;
+  /** 每个源最近一次拉取结果（会话内累积，不主动全测）。 */
+  private feedStatus = new Map<string, { ok: boolean; count?: number; reason?: string; at: number }>();
+  /** 最近一次成功的条目，拉取失败时兜底展示。 */
+  private lastGood = new Map<string, FeedItem[]>();
 
   constructor(private plugin: ElpPlugin, private app: App) {}
 
@@ -90,9 +94,12 @@ export class FeedsPanel {
         if (!parsed) throw new Error(`HTTP ${res.status}`);
       }
       this.items = parsed.items;
+      this.feedStatus.set(feed.id, { ok: true, count: parsed.items.length, at: Date.now() });
+      this.lastGood.set(feed.id, parsed.items);
     } catch (e) {
-      this.items = [];
-      new Notice(`拉取失败：${(e as Error).message}`);
+      // 失败：回落到最近一次成功的缓存条目，原因放进顶部横幅（render 里画）
+      this.feedStatus.set(feed.id, { ok: false, reason: (e as Error).message, at: Date.now() });
+      this.items = this.lastGood.get(feed.id) ?? [];
     }
     this.loading = false;
     this.render();
@@ -114,9 +121,14 @@ export class FeedsPanel {
     const bar = root.createDiv({ cls: 'elp-feeds-bar' });
     for (const f of feeds) {
       const chip = bar.createEl('button', {
-        cls: 'elp-books-tab' + (f.id === this.selectedId ? ' is-active' : ''),
-        text: f.kind === 'youtube' ? `▶ ${f.name}` : f.name,
+        cls: 'elp-books-tab elp-feed-chip' + (f.id === this.selectedId ? ' is-active' : ''),
       });
+      const st = this.feedStatus.get(f.id);
+      chip.createSpan({
+        cls: 'elp-feed-dot' + (st ? (st.ok ? ' is-ok' : ' is-fail') : ''),
+        attr: { 'aria-label': st ? (st.ok ? `可达 · ${st.count} 条` : `拉取失败：${st.reason}`) : '未检测' },
+      });
+      chip.createSpan({ text: f.name });
       chip.onclick = () => void this.select(f.id);
       chip.oncontextmenu = async (e) => {
         e.preventDefault();
@@ -133,6 +145,7 @@ export class FeedsPanel {
       if (latest) void this.select(latest.id);
     }).open(), 'elp-books-add');
     if (this.selectedId) iconButton(bar, 'refresh-cw', '刷新', () => void this.refreshItems());
+    bar.createSpan({ cls: 'elp-quota-chip', text: this.plugin.license.quotaText() });
 
     const feed = feeds.find((f) => f.id === this.selectedId);
     if (!feed) {
@@ -144,6 +157,19 @@ export class FeedsPanel {
     }
 
     if (this.loading) { root.createDiv({ cls: 'elp-sidebar-empty', text: '加载中…' }); return; }
+
+    const st = this.feedStatus.get(feed.id);
+    if (st && !st.ok) {
+      const banner = root.createDiv({ cls: 'elp-feed-banner' });
+      banner.createSpan({ cls: 'elp-feed-dot is-fail' });
+      banner.createSpan({
+        cls: 'elp-feed-banner-text',
+        text: `拉取失败：${st.reason ?? '未知原因'}` + (this.items.length ? '，以下为上次成功的缓存条目' : ''),
+      });
+      const retry = banner.createEl('button', { cls: 'elp-feed-retry', text: '重试' });
+      retry.onclick = () => void this.refreshItems();
+      if (!this.items.length) return;
+    }
 
     const grid = root.createDiv({ cls: 'elp-feed-grid' });
     for (const item of this.items) {

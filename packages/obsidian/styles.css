@@ -1538,3 +1538,51 @@ body.elp-style-background .elp-word {
 
 /* 订阅中心：境外源提示行 */
 .elp-preset-note { flex-basis: 100%; font-size: 12px; color: var(--text-muted); padding: 2px 4px; }
+
+
+/* ---- 0.27.0 主页/订阅中心 UI ---- */
+.elp-home-tab { display: inline-flex; align-items: center; gap: 7px; }
+.elp-home-tab-icon { display: flex; align-items: center; }
+.elp-home-tab-icon svg { width: 15px; height: 15px; }
+.elp-home-tab.is-active .elp-home-tab-icon { color: var(--interactive-accent); }
+
+.elp-feed-chip { display: inline-flex; align-items: center; gap: 7px; }
+.elp-feed-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--background-modifier-border); flex-shrink: 0;
+}
+.elp-feed-dot.is-ok { background: var(--color-green, #6EE7A0); }
+.elp-feed-dot.is-fail { background: var(--color-red, #F0876A); }
+
+.elp-quota-chip {
+  margin-left: auto; align-self: center;
+  font-size: 11px; color: var(--text-muted);
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 999px; padding: 4px 12px; white-space: nowrap;
+}
+
+.elp-feed-banner {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-left: 3px solid var(--color-red, #F0876A);
+  border-radius: 8px; padding: 9px 12px; margin: 4px 0 10px 0;
+}
+.elp-feed-banner-text { flex: 1; font-size: 12px; color: var(--text-normal); }
+.elp-feed-retry {
+  font-size: 11px; padding: 4px 12px; border-radius: 6px;
+  background: transparent; border: 1px solid var(--background-modifier-border);
+  color: var(--text-muted); cursor: pointer; box-shadow: none;
+}
+.elp-feed-retry:hover { color: var(--text-normal); }
+
+/* B 站原生流成功徽章（盖在视频左上角） */
+.elp-stream-badge {
+  position: absolute; top: 8px; left: 8px; z-index: 5;
+  padding: 2px 9px; border-radius: 999px;
+  font-size: 10px; font-weight: 600;
+  color: var(--interactive-accent);
+  background: rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+}

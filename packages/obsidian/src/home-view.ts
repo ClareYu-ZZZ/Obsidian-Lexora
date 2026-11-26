@@ -1,4 +1,4 @@
-import { ItemView, Scope, WorkspaceLeaf } from 'obsidian';
+import { setIcon, ItemView, Scope, WorkspaceLeaf } from 'obsidian';
 import type ElpPlugin from './main';
 import { FeedsPanel } from './feeds-view';
 import { BooksPanel } from './books-view';
@@ -99,8 +99,9 @@ export class LexoraView extends ItemView {
     for (const t of TABS) {
       const btn = this.navEl.createEl('button', {
         cls: 'elp-home-tab' + (t.id === tab ? ' is-active' : ''),
-        text: t.label,
       });
+      setIcon(btn.createSpan({ cls: 'elp-home-tab-icon' }), t.icon);
+      btn.createSpan({ text: t.label });
       btn.onclick = () => this.switchTab(t.id);
     }
     // panels（懒挂载，切换时保留状态——背单词会话不中断）
