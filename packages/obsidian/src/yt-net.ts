@@ -42,6 +42,32 @@ export function ytGet(plugin: ElpPlugin, url: string, timeoutMs = 15000): Promis
   return requestUrl({ url, headers, throw: false }).then((r) => ({ status: r.status, text: r.text }));
 }
 
+/** POST（JSON）版直连通道：Innertube API 用。同样桌面 Node 直连、移动端回退 requestUrl。 */
+export function ytPost(plugin: ElpPlugin, url: string, body: unknown, headers: Record<string, string> = {}, timeoutMs = 15000): Promise<YtResp> {
+  const h: Record<string, string> = { 'content-type': 'application/json', 'accept-encoding': 'identity', ...UA_HEADERS, ...headers };
+  const payload = JSON.stringify(body);
+  const req = (window as Window & { require?: (m: string) => unknown }).require;
+  if (Platform.isDesktopApp && req) {
+    const https = req('https') as typeof import('https');
+    return new Promise((resolve, reject) => {
+      const u = new URL(url);
+      const r = https.request({
+        hostname: u.hostname, path: u.pathname + u.search, method: 'POST',
+        headers: { ...h, 'content-length': Buffer.byteLength(payload) }, timeout: timeoutMs,
+      }, (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, text: Buffer.concat(chunks).toString('utf8') }));
+      });
+      r.on('timeout', () => { r.destroy(new Error('timeout')); });
+      r.on('error', reject);
+      r.write(payload);
+      r.end();
+    });
+  }
+  return requestUrl({ url, method: 'POST', headers: h, body: payload, throw: false }).then((r) => ({ status: r.status, text: r.text }));
+}
+
 // ---------- 境外网络探测 ----------
 let overseas: boolean | null = null;
 let probing: Promise<boolean> | null = null;

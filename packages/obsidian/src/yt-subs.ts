@@ -4,7 +4,7 @@
  * 纯 HTTP，不依赖 yt-dlp。
  */
 
-import { ytGet } from './yt-net';
+import { ytGet, ytPost } from './yt-net';
 import { extractEmbeddedJson } from '@elp/core';
 import type ElpPlugin from './main';
 
@@ -47,6 +47,43 @@ async function fromWatchPage(plugin: ElpPlugin, videoId: string): Promise<string
   }
 }
 
+/** 路线 1.5：Innertube ANDROID 客户端——其字幕直链不吃 pot 校验（yt-dlp 同款）。 */
+async function fromInnertube(plugin: ElpPlugin, videoId: string): Promise<string | null> {
+  try {
+    const r = await ytPost(plugin, 'https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
+      context: {
+        client: {
+          clientName: 'ANDROID',
+          clientVersion: '19.50.37',
+          androidSdkVersion: 34,
+          osName: 'Android', osVersion: '14',
+          hl: 'en', gl: 'US',
+        },
+      },
+      videoId,
+      contentCheckOk: true, racyCheckOk: true,
+    }, { 'user-agent': 'com.google.android.youtube/19.50.37 (Linux; U; Android 14) gzip', 'x-youtube-client-name': '3', 'x-youtube-client-version': '19.50.37' });
+    if (r.status >= 400) { console.debug('[lexora] innertube', r.status); return null; }
+    let pr: PlayerResponse | null = null;
+    try { pr = JSON.parse(r.text) as PlayerResponse; } catch { return null; }
+    const tracks = pr?.captions?.playerCaptionsTracklistRenderer?.captionTracks ?? [];
+    console.debug('[lexora] innertube tracks:', tracks.length);
+    if (tracks.length === 0) return null;
+    const score = (t: CaptionTrack): number =>
+      (t.languageCode?.startsWith('en') ? 2 : 0) + (t.kind === 'asr' ? 0 : 1);
+    const best = [...tracks].sort((a, b) => score(b) - score(a))[0];
+    if (!best?.baseUrl) return null;
+    const sep = best.baseUrl.includes('?') ? '&' : '?';
+    const sub = await ytGet(plugin, `${best.baseUrl}${sep}fmt=vtt`);
+    console.debug('[lexora] innertube timedtext:', sub.status, sub.text?.length ?? 0);
+    if (sub.status >= 400 || !sub.text?.includes('WEBVTT')) return null;
+    return sub.text;
+  } catch (e) {
+    console.debug('[lexora] innertube error', e);
+    return null;
+  }
+}
+
 interface InvCaption { label?: string; languageCode?: string; language_code?: string; url?: string }
 
 /** 路线二：Invidious 镜像的字幕 API（服务端已处理校验，直接给 vtt）。 */
@@ -73,9 +110,11 @@ async function fromInvidious(plugin: ElpPlugin, videoId: string): Promise<string
   return null;
 }
 
-/** 返回 vtt 文本；三条路线（官方页 → Invidious → NAS worker yt-dlp）都失败返回 null。 */
+/** 返回 vtt 文本；路线：官方页 → Innertube ANDROID（免 pot）→ Invidious → 自托管 worker yt-dlp。 */
 export async function fetchYoutubeSubtitle(plugin: ElpPlugin, videoId: string): Promise<string | null> {
-  const direct = (await fromWatchPage(plugin, videoId)) ?? (await fromInvidious(plugin, videoId));
+  const direct = (await fromWatchPage(plugin, videoId))
+    ?? (await fromInnertube(plugin, videoId))
+    ?? (await fromInvidious(plugin, videoId));
   if (direct) return direct;
   if (plugin.settings.workerUrl) {
     console.debug('[lexora] trying worker subtitle');
