@@ -36,7 +36,7 @@ export class LexoraView extends ItemView {
   constructor(leaf: WorkspaceLeaf, private plugin: ElpPlugin) {
     super(leaf);
     this.scope = new Scope(this.app.scope);
-    for (const key of [' ', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']) {
+    for (const key of [' ', 'h', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']) {
       this.scope.register([], key, (e) => {
         if (this.tab === 'review' && this.reviewPanel.handleKey(e)) {
           e.preventDefault();

@@ -19,6 +19,7 @@ export class ReviewPanel {
   private doneNew = 0;
   private doneReview = 0;
   private finished = true;
+  private streak = 0;
 
   constructor(
     private plugin: ElpPlugin,
@@ -42,12 +43,14 @@ export class ReviewPanel {
       case 'ArrowDown': void this.rate('hard'); return true;
       case 'ArrowRight': void this.rate('good'); return true;
       case 'ArrowUp': void this.master(); return true;
+      case 'h': case 'H': return this.applyHint();
       default: return false;
     }
   }
 
   setBook(bookId: string): void {
     this.bookId = bookId;
+    this.streak = 0;
     this.startSession();
   }
 
@@ -102,6 +105,15 @@ export class ReviewPanel {
     if (changed && this.current?.card.lemma === card.lemma) this.render();
   }
 
+  /** 拼写类题提示首字母：填入首字母并聚焦输入框。返回是否消费按键。 */
+  private hintApplier: (() => void) | null = null;
+
+  private applyHint(): boolean {
+    if (!this.hintApplier) return false;
+    this.hintApplier();
+    return true;
+  }
+
   private onSpace(): void {
     const item = this.current;
     if (!item || this.finished) return;
@@ -110,6 +122,7 @@ export class ReviewPanel {
   }
 
   private async master(): Promise<void> {
+    this.streak += 1;
     const item = this.current;
     if (!item || this.finished) return;
     await this.plugin.store.setMastered(item.card.lemma, true);
@@ -117,6 +130,7 @@ export class ReviewPanel {
   }
 
   private async rate(rating: ReviewRating): Promise<void> {
+    if (this.revealed || this.current?.mode === 'card') this.streak = rating === 'again' ? 0 : this.streak + 1;
     const item = this.current;
     if (!item || this.finished) return;
     if (!this.revealed && item.mode !== 'card') return;
@@ -157,7 +171,10 @@ export class ReviewPanel {
     info.createSpan({ cls: 'elp-review-bookname', text: book.name });
     const done = this.doneNew + this.doneReview;
     const total = this.queue.length;
-    info.createSpan({ cls: 'elp-review-count', text: `已完成 ${done} · 剩余 ${Math.max(0, total - done)}` });
+    info.createSpan({
+      cls: 'elp-review-count',
+      text: `已完成 ${done} · 剩余 ${Math.max(0, total - done)}` + (this.streak >= 2 ? ` · 连对 ${this.streak} 🔥` : ''),
+    });
     const barWrap = head.createDiv({ cls: 'elp-review-bar' });
     const bar = barWrap.createDiv({ cls: 'elp-review-bar-fill' });
     bar.style.width = total ? `${(done / total) * 100}%` : '0%';
@@ -177,6 +194,10 @@ export class ReviewPanel {
     }
 
     this.renderRatingBar(root, item);
+    const keys = root.createDiv({ cls: 'elp-review-keys' });
+    for (const k of ['Space 发音 / 翻面', 'H 提示首字母', '⏎ 提交', '← ↓ → ↑ 评分']) {
+      keys.createSpan({ text: k });
+    }
   }
 
   private wordHeader(parent: HTMLElement, card: WordCard, showWord = true): void {
@@ -218,8 +239,12 @@ export class ReviewPanel {
       for (const t of card.tags.slice(0, 6)) tags.createSpan({ cls: 'elp-tag', text: t });
     }
 
-    const examples: Array<{ en: string; sub?: string }> = [
-      ...card.contexts.slice(-1).map((c) => ({ en: c.sentence, sub: c.sourceTitle ? `— ${c.sourceTitle}` : undefined })),
+    const examples: Array<{ en: string; sub?: string; path?: string }> = [
+      ...card.contexts.slice(-1).map((c) => ({
+        en: c.sentence,
+        sub: c.sourceTitle ? `— ${c.sourceTitle}` : undefined,
+        path: c.sourcePath,
+      })),
       ...(card.dictExamples ?? []).slice(0, 2).map((e) => ({ en: e.en, sub: e.zh })),
     ];
     for (const ex of examples) {
@@ -228,7 +253,17 @@ export class ReviewPanel {
       const sent = main.createDiv({ cls: 'elp-popover-sentence' });
       renderSentence(sent, ex.en, card.lemma, card.variants);
       iconButton(main, 'volume-2', '朗读例句', () => pronounce(ex.en), 'elp-example-speak');
-      if (ex.sub) row.createDiv({ cls: 'elp-popover-source', text: ex.sub });
+      if (ex.sub) {
+        const src = row.createDiv({ cls: 'elp-popover-source' });
+        src.createSpan({ text: ex.sub });
+        if (ex.path) {
+          const link = src.createEl('a', { cls: 'elp-source-link', text: ' 回看原文 ↗', href: '#' });
+          link.onclick = (e) => {
+            e.preventDefault();
+            void this.app.workspace.openLinkText(ex.path!, '', true);
+          };
+        }
+      }
     }
   }
 
@@ -282,10 +317,12 @@ export class ReviewPanel {
     stage: HTMLElement, item: SessionItem, variant: 'meaning' | 'audio' | 'cloze',
   ): void {
     if (variant === 'audio') {
-      const q = stage.createDiv({ cls: 'elp-review-question' });
+      const q = stage.createDiv({ cls: 'elp-review-question elp-review-audio' });
+      const big = q.createEl('button', { cls: 'elp-audio-big', attr: { 'aria-label': '重听发音（Space）' } });
+      setIcon(big.createSpan(), 'volume-2');
+      big.onclick = () => pronounce(item.card.lemma);
+      if (item.card.phoneticUS) q.createDiv({ cls: 'elp-popover-phonetic', text: `美 ${item.card.phoneticUS}` });
       q.createDiv({ cls: 'elp-review-question-line', text: '听音拼写' });
-      const sub = q.createDiv({ cls: 'elp-review-sub' });
-      iconButton(sub, 'volume-2', '重听（Space）', () => pronounce(item.card.lemma));
     } else if (variant === 'cloze') {
       const q = stage.createDiv({ cls: 'elp-review-question' });
       this.renderExample(q, item.card, true);
@@ -301,18 +338,52 @@ export class ReviewPanel {
 
     if (!this.revealed) {
       const form = stage.createDiv({ cls: 'elp-spell-form' });
+      const lemma = item.card.lemma;
+      const useBoxes = lemma.length <= 16;
       const input = form.createEl('input', {
-        cls: 'elp-spell-input',
-        attr: { type: 'text', placeholder: '输入单词，回车检查', spellcheck: 'false', autocapitalize: 'off' },
+        cls: useBoxes ? 'elp-spell-ghost' : 'elp-spell-input',
+        attr: { type: 'text', placeholder: useBoxes ? '' : '输入单词，回车检查', spellcheck: 'false', autocapitalize: 'off', autocomplete: 'off', maxlength: String(lemma.length + 8) },
       });
+      let boxes: HTMLElement[] = [];
+      if (useBoxes) {
+        // 字母格：隐形输入框承接键入，格子只负责展示
+        const grid = form.createDiv({ cls: 'elp-spell-boxes' });
+        boxes = [...lemma].map((ch) => grid.createSpan({
+          cls: 'elp-spell-box' + (ch === ' ' ? ' is-space' : ''),
+          text: ch === ' ' ? ' ' : '',
+        }));
+        const paint = () => {
+          const v = input.value;
+          boxes.forEach((b, i) => {
+            if (lemma[i] === ' ') return;
+            b.setText(v[i] ?? '');
+            b.toggleClass('is-filled', i < v.length);
+            b.toggleClass('is-cursor', i === v.length);
+          });
+        };
+        input.addEventListener('input', paint);
+        grid.onclick = () => input.focus();
+        paint();
+      }
       const check = () => {
-        this.answeredCorrect = input.value.trim().toLowerCase() === item.card.lemma;
+        this.answeredCorrect = input.value.trim().toLowerCase() === lemma.toLowerCase();
         this.revealed = true;
-        pronounce(item.card.lemma);
+        this.hintApplier = null;
+        pronounce(lemma);
         this.render();
       };
       input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); check(); } });
-      const btn = form.createEl('button', { cls: 'mod-cta', text: '检查' });
+      const actions = form.createDiv({ cls: 'elp-spell-actions' });
+      const hintBtn = actions.createEl('button', { cls: 'elp-spell-hint', text: `提示首字母 H` });
+      this.hintApplier = () => {
+        if (!input.value) {
+          input.value = lemma[0];
+          input.dispatchEvent(new Event('input'));
+        }
+        input.focus();
+      };
+      hintBtn.onclick = () => this.applyHint();
+      const btn = actions.createEl('button', { cls: 'mod-cta', text: '检查 ⏎' });
       btn.onclick = check;
       window.setTimeout(() => input.focus(), 30);
     } else {
