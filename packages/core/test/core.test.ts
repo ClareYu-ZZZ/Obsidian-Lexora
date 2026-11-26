@@ -560,9 +560,13 @@ test('license: trial state machine and review-mode gating', () => {
   assert.equal(computeLicenseState({ verified: null }).tier, 'free');
   const pro = computeLicenseState({ verified: { v: 1, plan: 'pro', email: 'a@b.c', iat: t0, exp: t0 + 365 * day } });
   assert.ok(hasPro(pro));
-  const trial = computeLicenseState({ verified: null, trialStartedAt: t0, now: t0 + 3 * day });
+  const trial = computeLicenseState({ verified: null, trialStartedAt: t0, now: t0 + 1 * day });
   assert.equal(trial.tier, 'trial');
-  assert.equal(trial.trialDaysLeft, 11);
+  assert.equal(trial.trialDaysLeft, 2);
+  // 试用换设备 → 免费并标记设备受限
+  const moved = computeLicenseState({ verified: null, trialStartedAt: t0, now: t0 + 1 * day, trialDeviceOk: false });
+  assert.equal(moved.tier, 'free');
+  assert.ok(moved.trialDeviceBlocked);
   const over = computeLicenseState({ verified: null, trialStartedAt: t0, now: t0 + 15 * day });
   assert.equal(over.tier, 'free');
   assert.ok(over.trialExpired);
@@ -584,7 +588,7 @@ test('license: monthly lesson quota', () => {
   assert.equal(kept.used, 3);
   const rolled = normalizeLessonUsage({ month: '2026-11', used: 5 }, dec);
   assert.deepEqual(rolled, { month: '2026-12', used: 0 });
-  assert.equal(lessonQuotaLimit({ tier: 'free' }), 5);
+  assert.equal(lessonQuotaLimit({ tier: 'free' }), 10);
   assert.equal(lessonQuotaLimit({ tier: 'trial' }), 20);
   assert.equal(lessonQuotaLimit({ tier: 'pro' }), 20);
 });

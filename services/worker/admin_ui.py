@@ -159,6 +159,21 @@ progress{width:180px;height:8px;accent-color:#2E9E68}
   </section>
 
   <section class="sect" id="s-members">
+    <div class="panel"><div class="ph"><h2>签发会员 Key</h2><span class="muted" id="iss-hint"></span></div>
+      <div class="addrow">
+        <div class="fld" style="flex:2 1 220px"><label>会员邮箱</label><input type="text" id="iss-email" placeholder="user@example.com"></div>
+        <div class="fld" style="flex:1 1 150px"><label>套餐</label><select id="iss-plan"></select></div>
+        <div class="fld" style="flex:0 1 110px"><label>价格 ¥</label><input type="number" id="iss-price" step="0.01"></div>
+        <button class="btn pri" id="iss-btn" onclick="issueKey()">生成 Key</button>
+      </div>
+      <div id="iss-out" style="display:none;margin-top:10px">
+        <div class="muted" style="margin-bottom:6px">已签发（账本已记录）——整段复制发给会员，填入插件设置即可激活：</div>
+        <div style="display:flex;gap:8px;align-items:stretch">
+          <textarea id="iss-key" readonly style="flex:1;height:72px;font-family:monospace;font-size:11px;resize:none"></textarea>
+          <button class="btn" onclick="copyKey()">复制</button>
+        </div>
+      </div>
+    </div>
     <div class="panel"><div class="ph"><h2>付费用户活跃 · 7 天（worker 侧）</h2></div><table><thead><tr><th>邮箱</th><th>今日调用</th><th>7 天调用</th><th>最近活跃</th></tr></thead><tbody id="mb-users"></tbody></table></div>
     <div class="panel"><div class="ph"><h2>已签发订阅</h2><span class="muted">来自 issued.jsonl（licgen 账本，挂载 /data/issued.jsonl）</span></div><table><thead><tr><th>邮箱</th><th>签发</th><th>到期</th><th>价格</th><th>状态</th></tr></thead><tbody id="mb-issued"></tbody></table></div>
   </section>
@@ -203,6 +218,36 @@ const fmt=(ts)=>new Date(ts*1000).toLocaleString('zh-CN',{hour12:false,month:'2-
 const dur=(ms)=>ms>=60000?(ms/60000).toFixed(1)+' 分':ms>=1000?(ms/1000).toFixed(1)+' 秒':ms+' ms';
 const mb=(b)=>b>=1024**3?(b/1024**3).toFixed(1)+' GB':(b/1048576).toFixed(0)+' MB';
 const TITLES={overview:'概览',jobs:'任务监控',members:'会员订阅',feeds:'推荐源配置',library:'公版内容库'};
+let PRICING={};
+function renderIssue(d){
+  PRICING=d.pricing||{};
+  const sel=$('iss-plan');
+  if(sel && !sel.options.length){
+    sel.innerHTML=Object.entries(PRICING).map(([k,v])=>`<option value="${k}">${v.label} ¥${v.price}（${v.months} 个月）</option>`).join('');
+    sel.onchange=()=>{$('iss-price').value=PRICING[sel.value].price;};
+    if(sel.value)$('iss-price').value=PRICING[sel.value].price;
+  }
+  const ok=!!d.signing;
+  $('iss-btn').disabled=!ok;
+  $('iss-hint').textContent=ok?`Pro 配额：worker 转录 ${d.quota?.proMonthlyJobs}/月 · 设备上限 ${d.quota?.proDevices} 台`:'签发密钥未挂载：compose 挂载私钥到 /keys/private.pem 后可用';
+}
+async function issueKey(){
+  const email=$('iss-email').value.trim(), plan=$('iss-plan').value, price=$('iss-price').value;
+  if(!email.includes('@')){alert('先填会员邮箱');return;}
+  $('iss-btn').disabled=true;
+  try{
+    const r=await fetch('/admin/api/issue',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email,plan,price})});
+    const j=await r.json();
+    if(!r.ok)throw new Error(j.detail||r.status);
+    $('iss-out').style.display='block';
+    $('iss-key').value=j.key;
+    loadStats();
+  }catch(e){alert('签发失败：'+e.message);}
+  finally{$('iss-btn').disabled=false;}
+}
+function copyKey(){
+  const ta=$('iss-key');ta.select();navigator.clipboard?.writeText(ta.value);
+}
 document.querySelectorAll('#nav button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('#nav button').forEach(x=>x.classList.toggle('on',x===b));
   document.querySelectorAll('.sect').forEach(s=>s.classList.toggle('on',s.id==='s-'+b.dataset.s));
@@ -219,6 +264,7 @@ async function loadStats(){
   $('hostline').textContent=location.host+' · 在线';
   $('metaline').textContent=`v${d.apiVersion} · whisper ${d.whisper.model}×${d.whisper.threads}线程 · 运行 ${up}`;
   const s=d.system.now||{};
+  renderIssue(d);
   const todayJobs=Object.values(d.jobs.kinds).reduce((n,k)=>n+k.today,0);
   $('ov-cards').innerHTML=[['CPU',(s.cpu??'—')+'%','负载 '+(s.load??'—')],['内存',(s.mem??'—')+'%',''],
     ['今日任务',todayJobs,'失败 '+Object.values(d.jobs.kinds).reduce((n,k)=>n+k.fail,0)],

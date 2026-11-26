@@ -13,7 +13,7 @@
  */
 
 export const LICENSE_PREFIX = 'LEXORA1';
-export const TRIAL_DAYS = 14;
+export const TRIAL_DAYS = 3;
 
 export interface LicensePayload {
   v: 1;
@@ -38,6 +38,8 @@ export interface LicenseState {
   trialExpired?: boolean;
   /** Set when a key was present but rejected (bad format/signature/expired). */
   keyError?: string;
+  /** True when a trial exists but was started on a different device (free tier enforced). */
+  trialDeviceBlocked?: boolean;
 }
 
 /** Ed25519 verify, injected by the host (plugin bundles an implementation). */
@@ -148,6 +150,8 @@ export interface LicenseInputs {
   trialStartedAt?: number;
   now?: number;
   trialDays?: number;
+  /** False when the stored trial was started on another device. */
+  trialDeviceOk?: boolean;
 }
 
 export function computeLicenseState(inp: LicenseInputs): LicenseState {
@@ -155,6 +159,10 @@ export function computeLicenseState(inp: LicenseInputs): LicenseState {
   if (inp.verified) return { tier: 'pro', payload: inp.verified };
   const base: Pick<LicenseState, 'keyError'> = inp.keyError ? { keyError: inp.keyError } : {};
   if (inp.trialStartedAt !== undefined) {
+    // 试用绑定首台设备：换设备视为试用不可用（免费版 1 台设备）
+    if (inp.trialDeviceOk === false) {
+      return { ...base, tier: 'free', trialExpired: true, trialDeviceBlocked: true };
+    }
     const days = inp.trialDays ?? TRIAL_DAYS;
     const msLeft = inp.trialStartedAt + days * 86400_000 - now;
     if (msLeft > 0) {
@@ -177,12 +185,26 @@ export function encodeLicense(payload: LicensePayload, signature: Uint8Array): s
 
 /* ---------------- monthly lesson-generation quota ---------------- */
 
-/** Lessons (from audio/video/text) each tier may generate per calendar month. */
-export const LESSON_QUOTA: Record<'free' | 'pro', number> = { free: 5, pro: 20 };
+/** 各档位每自然月可生成的教程数（非 worker 转录：字幕/文本等本地管线）。 */
+export const LESSON_QUOTA: Record<LicenseTier, number> = { free: 10, trial: 20, pro: 20 };
 
 export function lessonQuotaLimit(state: LicenseState): number {
-  return hasPro(state) ? LESSON_QUOTA.pro : LESSON_QUOTA.free;
+  return LESSON_QUOTA[state.tier];
 }
+
+/** elp-worker 转录配额：试用期累计 3 个；Pro 每自然月 10 个（worker 侧强制执行）。 */
+export const WORKER_TRIAL_TOTAL = 3;
+export const WORKER_PRO_MONTHLY = 10;
+
+/** 设备数上限（防 key 外借）：免费/试用 1 台，Pro 3 台。 */
+export const DEVICE_LIMIT: Record<'free' | 'pro', number> = { free: 1, pro: 3 };
+
+/** Pro 定价（人民币）：管理台签发页默认值，可在签发时改价。 */
+export const PRICING = [
+  { plan: 'monthly', label: '按月', months: 1, price: 25 },
+  { plan: 'quarterly', label: '按季（约 9 折）', months: 3, price: 68 },
+  { plan: 'yearly', label: '按年（约 66 折）', months: 12, price: 198 },
+] as const;
 
 export interface LessonUsage {
   /** Local calendar month, e.g. "2026-11". */

@@ -9,6 +9,7 @@ import {
   computeLicenseState, hasPro, verifyLicenseKey,
   lessonQuotaLimit, normalizeLessonUsage,
   PRO_FEATURE_LABELS, TRIAL_DAYS,
+  WORKER_TRIAL_TOTAL,
   type LicensePayload, type LicenseState, type ProFeature,
 } from '@elp/core';
 import type ElpPlugin from './main';
@@ -23,6 +24,17 @@ function hexToBytes(hex: string): Uint8Array {
   const out = new Uint8Array(hex.length / 2);
   for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
   return out;
+}
+
+/** 本机设备指纹：存 localStorage（按设备隔离，不随 vault 同步）。 */
+export function deviceId(): string {
+  const KEY = 'lexora-device-id';
+  let id = window.localStorage.getItem(KEY);
+  if (!id) {
+    id = Array.from(crypto.getRandomValues(new Uint8Array(8))).map((b) => b.toString(16).padStart(2, '0')).join('');
+    window.localStorage.setItem(KEY, id);
+  }
+  return id;
 }
 
 export class LicenseManager {
@@ -47,7 +59,10 @@ export class LicenseManager {
         keyError = e instanceof Error ? e.message : String(e);
       }
     }
-    this.state = computeLicenseState({ verified: this.verified, keyError, trialStartedAt });
+    this.state = computeLicenseState({
+      verified: this.verified, keyError, trialStartedAt,
+      trialDeviceOk: this.plugin.settings.trialDeviceId ? this.plugin.settings.trialDeviceId === deviceId() : true,
+    });
     return this.state;
   }
 
@@ -57,12 +72,18 @@ export class LicenseManager {
       verified: this.verified,
       keyError: this.state.keyError,
       trialStartedAt: this.plugin.settings.trialStartedAt,
+      trialDeviceOk: this.plugin.settings.trialDeviceId ? this.plugin.settings.trialDeviceId === deviceId() : true,
     });
     return this.state;
   }
 
   get pro(): boolean {
     return hasPro(this.tick());
+  }
+
+  /** 当前档位（worker-client 等轻量调用）。 */
+  tickTier(): 'free' | 'trial' | 'pro' {
+    return this.tick().tier;
   }
 
   /**
@@ -74,9 +95,10 @@ export class LicenseManager {
     if (hasPro(st)) return true;
     if (!st.trialExpired && this.plugin.settings.trialStartedAt === undefined) {
       this.plugin.settings.trialStartedAt = Date.now();
+      this.plugin.settings.trialDeviceId = deviceId();
       void this.plugin.saveSettings();
       this.tick();
-      new Notice(`Lexora Pro 试用已开始：${TRIAL_DAYS} 天内可使用全部功能。\n（${PRO_FEATURE_LABELS[feature]}）`, 8000);
+      new Notice(`Lexora Pro 试用已开始：${TRIAL_DAYS} 天内可使用全部功能（elp-worker 转录限 ${WORKER_TRIAL_TOTAL} 个，本设备专享）。\n（${PRO_FEATURE_LABELS[feature]}）`, 8000);
       return true;
     }
     new Notice(`「${PRO_FEATURE_LABELS[feature]}」是 Lexora Pro 功能。\n试用已结束——请在设置中输入 license key 解锁。`, 8000);
@@ -88,7 +110,7 @@ export class LicenseManager {
     const usage = normalizeLessonUsage(this.plugin.settings.lessonUsage);
     const limit = lessonQuotaLimit(this.tick());
     if (usage.used >= limit) {
-      const upsell = this.pro ? '' : '升级 Lexora Pro 可提升至每月 20 个。';
+      const upsell = this.pro ? '' : '升级 Lexora Pro：每月 20 个教程 + 10 个 worker 原声转写。';
       new Notice(`本月教程生成额度已用完（${usage.used}/${limit}）。额度每月 1 日重置。${upsell}`, 8000);
       return false;
     }
@@ -116,7 +138,8 @@ export class LicenseManager {
     }
     if (st.tier === 'trial') return `Pro 试用中：剩余 ${st.trialDaysLeft} 天`;
     if (st.keyError) return `Key 无效：${st.keyError}`;
+    if (st.trialDeviceBlocked) return '免费版（试用已在另一台设备使用；免费档限 1 台设备）';
     if (st.trialExpired) return '免费版（试用已结束）';
-    return '免费版（首次使用 Pro 功能时自动开始 14 天试用）';
+    return `免费版（首次使用 Pro 功能时自动开始 ${TRIAL_DAYS} 天试用）`;
   }
 }

@@ -81,6 +81,10 @@ environment:
   # - LEXORA_WHISPER_MODEL=distil-small.en   # 仅英文！中文媒体转写请保持 small
   # - LEXORA_WHISPER_THREADS=2
   # - LEXORA_MAX_TRANSCRIBE=1        # 转写互斥（默认 1），排队任务状态为 queued
+    volumes 追加（可选，启用管理台签发会员 Key）：
+      - /opt/lexora/keys:/keys:ro      # 把 licgen 的 private.pem 放到 /opt/lexora/keys/
+    会员规则（1.7.0）：试用 3 天（转录 3 次/设备）；Pro ¥25/月、¥68/季、¥198/年，
+    worker 转录 10 次/月、设备上限 3 台；免费版本地生成 10 篇/月。
   # - LEXORA_LICENSED_DAILY_JOBS=10
   # - LEXORA_REVOKED=refund@user.com   # 吊销名单
 cpus: 8

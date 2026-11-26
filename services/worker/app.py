@@ -58,7 +58,10 @@ LICENSE_PUBKEY_HEX = os.environ.get(
     "47b76ac85ae108a5afd0e9f0cc31357fbdf93b571b1e6815316c474ec051df42",
 )
 REVOKED_EMAILS = {e.strip().lower() for e in os.environ.get("LEXORA_REVOKED", "").split(",") if e.strip()}
-LICENSED_DAILY_JOBS = int(os.environ.get("LEXORA_LICENSED_DAILY_JOBS", "10"))
+# 会员配额：Pro 每自然月 worker 转录数；试用（无 key，按设备）终身累计数；Pro 设备上限
+PRO_MONTHLY_JOBS = int(os.environ.get("LEXORA_PRO_MONTHLY_JOBS", "10"))
+TRIAL_TOTAL_JOBS = int(os.environ.get("LEXORA_TRIAL_TOTAL_JOBS", "3"))
+PRO_DEVICE_LIMIT = int(os.environ.get("LEXORA_PRO_DEVICE_LIMIT", "3"))
 LICENSED_DAILY_TTS = int(os.environ.get("LEXORA_LICENSED_DAILY_TTS", "300"))
 if ACCEPT_LICENSE_KEYS:
     print("[elp-worker] 托管模式：接受 Lexora Pro license key 鉴权", flush=True)
@@ -66,17 +69,44 @@ _USE: dict = {}
 _USE_LOCK = threading.Lock()
 
 
-def _quota_take(identity: str, kind: str, limit: int) -> None:
-    day = time.strftime("%Y-%m-%d", time.gmtime())
-    with _USE_LOCK:
-        rec = _USE.setdefault(identity, {})
-        if rec.get("day") != day:
-            rec.clear()
-            rec["day"] = day
-        n = rec.get(kind, 0)
+def _quota_take(identity: str, kind: str, limit: int, period: str, label: str) -> None:
+    """持久配额：period 为自然月（YYYY-MM）或 "life"（终身累计）。超限 429。"""
+    key = time.strftime("%Y-%m", time.gmtime()) if period == "month" else "life"
+    with _mx_lock:
+        row = _mx_conn.execute(
+            "SELECT n FROM usage WHERE identity=? AND period=? AND kind=?", (identity, key, kind),
+        ).fetchone()
+        n = row[0] if row else 0
         if n >= limit:
-            raise HTTPException(status_code=429, detail=f"今日{kind}配额已用完（{limit}/天），明天再来")
-        rec[kind] = n + 1
+            raise HTTPException(status_code=429, detail=label.format(limit=limit))
+        _mx_conn.execute(
+            "INSERT INTO usage (identity, period, kind, n) VALUES (?,?,?,1) "
+            "ON CONFLICT(identity, period, kind) DO UPDATE SET n = n + 1",
+            (identity, key, kind),
+        )
+        _mx_conn.commit()
+
+
+def _register_device(identity: str, device: str, limit: int) -> None:
+    """设备绑定：同一身份至多 limit 台；超限 403（防 key 外借分发）。"""
+    if not device:
+        return  # 旧版插件没有设备头：宽限放行
+    with _mx_lock:
+        known = [r[0] for r in _mx_conn.execute(
+            "SELECT device FROM devices WHERE identity=?", (identity,),
+        ).fetchall()]
+        if device in known:
+            return
+        if len(known) >= limit:
+            raise HTTPException(
+                status_code=403,
+                detail=f"该 license 已绑定 {limit} 台设备。如需更换设备请联系站长解绑。",
+            )
+        _mx_conn.execute(
+            "INSERT OR IGNORE INTO devices (identity, device, first_ts) VALUES (?,?,?)",
+            (identity, device, time.time()),
+        )
+        _mx_conn.commit()
 
 
 def _verify_license_key(key: str) -> str | None:
@@ -136,8 +166,14 @@ def require_auth(request: Request) -> str:
     if ACCEPT_LICENSE_KEYS and bearer.startswith("LEXORA1."):
         email = _verify_license_key(bearer)
         if email:
+            # Pro 至多 3 台设备（防 key 外借）
+            _register_device(f"pro:{email}", request.headers.get("x-lexora-device", ""), PRO_DEVICE_LIMIT)
             return f"pro:{email}"
         raise HTTPException(status_code=401, detail="license key 无效或已过期")
+    # 试用通道：无 key，按设备指纹计终身转录配额（仅转写任务可用）
+    trial_dev = request.headers.get("x-lexora-trial-device", "").strip()
+    if ACCEPT_LICENSE_KEYS and trial_dev and len(trial_dev) <= 64:
+        return f"trial:{trial_dev}"
     raise HTTPException(status_code=401, detail="missing or invalid bearer token")
 
 
@@ -188,6 +224,9 @@ _mx_conn.execute(
     "CREATE TABLE IF NOT EXISTS events (ts REAL, kind TEXT, caller TEXT, duration_ms INTEGER, ok INTEGER, detail TEXT)"
 )
 _mx_conn.execute("CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts)")
+# 配额账本（持久，重启/重部署不清零）：usage 按 (身份, 自然月, 类别) 计数；devices 记 key 绑定的设备
+_mx_conn.execute("CREATE TABLE IF NOT EXISTS usage (identity TEXT, period TEXT, kind TEXT, n INTEGER, PRIMARY KEY (identity, period, kind))")
+_mx_conn.execute("CREATE TABLE IF NOT EXISTS devices (identity TEXT, device TEXT, first_ts REAL, PRIMARY KEY (identity, device))")
 _mx_conn.commit()
 _mx_lock = threading.Lock()
 STARTED_AT = time.time()
@@ -552,8 +591,14 @@ async def create_job(
     options: str = Form("{}"),
     caller: str = Depends(require_auth),
 ) -> JSONResponse:
-    if caller != "admin":
-        _quota_take(caller, "转写/切片", LICENSED_DAILY_JOBS)
+    if caller.startswith("trial:"):
+        if type != "transcribe":
+            raise HTTPException(status_code=403, detail="试用期仅支持转写任务")
+        _quota_take(caller, "transcribe", TRIAL_TOTAL_JOBS, "life",
+                    "试用期的 {limit} 次 worker 转录已用完。订阅 Lexora Pro 可获每月 10 次原声转写。")
+    elif caller != "admin":
+        _quota_take(caller, "transcribe", PRO_MONTHLY_JOBS, "month",
+                    "本月 worker 转录配额已用完（{limit} 次/月，每月 1 日重置）。")
     if type not in ("transcribe", "clip"):
         raise HTTPException(status_code=400, detail=f"unsupported job type: {type}")
     opts = json.loads(options or "{}")
@@ -624,6 +669,8 @@ class YtAudioRequest(BaseModel):
 
 @app.post("/v1/ytaudio")
 def ytaudio(req: YtAudioRequest, caller: str = Depends(require_auth)) -> JSONResponse:
+    if caller.startswith("trial:"):
+        raise HTTPException(status_code=403, detail="试用期不含 YouTube 音轨下载")
     """异步任务：下载 YouTube 音轨为 mp3（结果走 /v1/jobs/{id}/result）。"""
     if caller != "admin":
         raise HTTPException(status_code=403, detail="托管 worker 未开放 YouTube 功能，请自托管")
@@ -649,6 +696,8 @@ class SubtitleRequest(BaseModel):
 
 @app.post("/v1/subtitle")
 def subtitle(req: SubtitleRequest, caller: str = Depends(require_auth)) -> JSONResponse:
+    if caller.startswith("trial:"):
+        raise HTTPException(status_code=403, detail="试用期不含 worker 字幕抓取")
     """只拉 YouTube 字幕（不下载音视频）：人工字幕优先，ASR 自动字幕兜底。"""
     if caller != "admin":
         raise HTTPException(status_code=403, detail="托管 worker 未开放 YouTube 功能，请自托管")
@@ -742,8 +791,10 @@ def _pad_wav(data: bytes, lead: float = 0.12, tail: float = 0.18) -> bytes:
 
 @app.post("/v1/tts")
 def tts(req: TtsRequest, caller: str = Depends(require_auth)) -> Response:
+    if caller.startswith("trial:"):
+        raise HTTPException(status_code=403, detail="试用期不含 worker TTS")
     if caller != "admin":
-        _quota_take(caller, "TTS", LICENSED_DAILY_TTS)
+        _quota_take(caller, "TTS", LICENSED_DAILY_TTS, "month", "本月 TTS 配额已用完（{limit} 次/月）")
     _t0 = time.time()
     text = req.text.strip()
     if not text:
@@ -856,6 +907,57 @@ def _pct(sorted_ms: list, q: float) -> int:
     return sorted_ms[min(len(sorted_ms) - 1, int(q * len(sorted_ms)))]
 
 
+SIGNING_KEY_PATH = Path(os.environ.get("LEXORA_SIGNING_KEY", "/keys/private.pem"))
+# 定价（人民币）：签发页默认值，可改价
+PRICING = {"monthly": {"months": 1, "price": 25, "label": "按月"},
+           "quarterly": {"months": 3, "price": 68, "label": "按季"},
+           "yearly": {"months": 12, "price": 198, "label": "按年"}}
+
+
+@app.post("/admin/api/issue", dependencies=[Depends(require_admin)])
+def issue_license(body: dict) -> JSONResponse:
+    """管理台签发 Pro license key。需要把 Ed25519 私钥挂载到 LEXORA_SIGNING_KEY。"""
+    if not SIGNING_KEY_PATH.exists():
+        raise HTTPException(status_code=409, detail="签发密钥未挂载（compose 挂载私钥到 /keys/private.pem）")
+    email = str(body.get("email", "")).strip()
+    plan = str(body.get("plan", "monthly"))
+    if "@" not in email or len(email) > 120:
+        raise HTTPException(status_code=400, detail="邮箱格式不对")
+    if plan not in PRICING:
+        raise HTTPException(status_code=400, detail="未知套餐")
+    try:
+        price = float(body.get("price", PRICING[plan]["price"]))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="价格格式不对")
+    months = PRICING[plan]["months"]
+    # 与 licgen 的 JS setMonth 行为一致：按自然月加
+    now_dt = datetime.now(timezone.utc)
+    month0 = now_dt.month - 1 + months
+    exp_dt = now_dt.replace(year=now_dt.year + month0 // 12, month=month0 % 12 + 1,
+                            day=min(now_dt.day, 28))
+    iat = int(time.time() * 1000)
+    exp = int(exp_dt.timestamp() * 1000)
+    # 字节级对齐 tools/licgen/sign.mjs：键序 v,plan,email,iat,exp + 紧凑分隔符
+    payload = json.dumps({"v": 1, "plan": "pro", "email": email, "iat": iat, "exp": exp},
+                         separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives.serialization import load_pem_private_key
+    sk = load_pem_private_key(SIGNING_KEY_PATH.read_bytes(), password=None)
+    if not isinstance(sk, Ed25519PrivateKey):
+        raise HTTPException(status_code=500, detail="私钥不是 Ed25519")
+    sig = sk.sign(payload)
+    b64u = lambda b: base64.urlsafe_b64encode(b).rstrip(b"=").decode()  # noqa: E731
+    key = f"LEXORA1.{b64u(payload)}.{b64u(sig)}"
+    try:
+        ISSUED_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with ISSUED_FILE.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"email": email, "plan": plan, "iat": iat, "exp": exp, "price": price},
+                               ensure_ascii=False) + "\n")
+    except Exception:  # noqa: BLE001 — 账本写不进不拦签发
+        pass
+    return JSONResponse({"key": key, "email": email, "exp": exp, "plan": plan, "price": price})
+
+
 @app.get("/admin/api/stats", dependencies=[Depends(require_admin)])
 def admin_stats() -> JSONResponse:
     now = time.time()
@@ -904,6 +1006,9 @@ def admin_stats() -> JSONResponse:
         "uptime_s": int(now - STARTED_AT),
         "apiVersion": API_VERSION,
         "whisper": {"model": WHISPER_MODEL, "threads": WHISPER_THREADS},
+        "signing": SIGNING_KEY_PATH.exists(),
+        "pricing": PRICING,
+        "quota": {"proMonthlyJobs": PRO_MONTHLY_JOBS, "trialTotalJobs": TRIAL_TOTAL_JOBS, "proDevices": PRO_DEVICE_LIMIT},
         "system": {"now": sys_now, "history": list(_SYS_SAMPLES)},
         "jobs": {
             "kinds": kinds,

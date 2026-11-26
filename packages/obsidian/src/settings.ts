@@ -52,6 +52,8 @@ export interface ElpSettings {
   licenseKey: string;
   /** Unix ms when the 14-day trial started; absent = not started. */
   trialStartedAt?: number;
+  /** 试用绑定的设备指纹（首台开始试用的设备；免费档单设备约束）。 */
+  trialDeviceId?: string;
   /** Monthly lesson-generation counter. */
   lessonUsage?: { month: string; used: number };
   /** ---- 更新与统计 ---- */

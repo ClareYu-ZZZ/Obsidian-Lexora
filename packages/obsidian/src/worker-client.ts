@@ -1,5 +1,6 @@
 import { TFile, requestUrl } from 'obsidian';
 import type ElpPlugin from './main';
+import { deviceId } from './license';
 
 /** 上传源：vault 文件，或预处理后的内存字节（如大视频抽出的音轨）。 */
 export type UploadSource = TFile | { name: string; bytes: ArrayBuffer };
@@ -26,8 +27,12 @@ export class WorkerClient {
   }
 
   private headers(): Record<string, string> {
+    const h: Record<string, string> = { 'x-lexora-device': deviceId() };
     const token = this.plugin.settings.workerToken;
-    return token ? { authorization: `Bearer ${token}` } : {};
+    if (token) h.authorization = `Bearer ${token}`;
+    // 试用期无 key：带试用设备头，worker 侧按设备累计 3 次转录配额
+    else if (this.plugin.license.tickTier() === 'trial') h['x-lexora-trial-device'] = deviceId();
+    return h;
   }
 
   async capabilities(): Promise<WorkerCapabilities | null> {
