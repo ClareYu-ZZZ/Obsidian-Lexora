@@ -104,6 +104,7 @@ export function registerPlayer(plugin: ElpPlugin): void {
             lineStart: fresh?.lineStart ?? info?.lineStart,
             lineEnd: fresh?.lineEnd ?? info?.lineEnd,
             headingNo: findHeadingNo(node),
+            quote: findQuoteText(node),
           });
         };
       });
@@ -137,11 +138,35 @@ function findHeadingNo(start: Element): number | null {
   return null;
 }
 
+/** 从某个渲染节点出发找最近的前序引用块（本句原文）文本——全文唯一的定位锚。 */
+function findQuoteText(start: Element): string | null {
+  let cur: Element | null = start;
+  while (cur) {
+    for (let sib = cur.previousElementSibling; sib; sib = sib.previousElementSibling) {
+      let q: Element | null = null;
+      if (sib.tagName === 'BLOCKQUOTE') q = sib;
+      else {
+        const qs = sib.querySelectorAll('blockquote');
+        if (qs.length) q = qs[qs.length - 1];
+      }
+      const t = q?.textContent?.trim();
+      if (t && t.length >= 12) return t;
+    }
+    cur = cur.parentElement;
+  }
+  return null;
+}
+
+/** 文本归一化：去空白与 markdown 记号，用于把渲染文本和源码行对上。 */
+function normAnchor(t: string): string {
+  return t.replace(/[\s*=_~`>![\]()]/g, '').toLowerCase();
+}
+
 /** 切换 学习笔记 里某条跟读行的第 k 个 [ ]/[x]，回写文件。
  *  定位：区块行号 → 所属长难句标题号（### N.）；都失败则放弃并提示，绝不写别的行。 */
 async function toggleFollowMark(
   plugin: ElpPlugin, sourcePath: string, k: number, item: HTMLElement,
-  loc: { lineStart?: number; lineEnd?: number; headingNo?: number | null },
+  loc: { lineStart?: number; lineEnd?: number; headingNo?: number | null; quote?: string | null },
 ): Promise<void> {
   const file = plugin.app.vault.getAbstractFileByPath(sourcePath);
   if (!(file instanceof TFile)) return;
@@ -150,19 +175,34 @@ async function toggleFollowMark(
     // 模板行是 `- **跟读**：…`（粗体星号隔开 跟读 和 ：），所以只认 '跟读' + 复选框
     const isFollow = (l: string) => l.includes('跟读') && /\[( |x)\]/i.test(l);
     let target = -1;
-    if (loc.lineStart !== undefined && loc.lineEnd !== undefined) {
+    let via = '';
+    // ① 原句引用文本（全文唯一）：定位引用行，向后找本块的跟读行
+    if (loc.quote) {
+      const key = normAnchor(loc.quote).slice(0, 32);
+      if (key.length >= 10) {
+        const qi = lines.findIndex((l) => l.trim().startsWith('>') && normAnchor(l).includes(key));
+        if (qi >= 0) {
+          for (let ln = qi + 1; ln < lines.length && !/^#{2,3} /.test(lines[ln]); ln++) {
+            if (isFollow(lines[ln])) { target = ln; via = 'quote'; break; }
+          }
+        }
+      }
+    }
+    // ② 点击时的区块行号
+    if (target < 0 && loc.lineStart !== undefined && loc.lineEnd !== undefined) {
       for (let ln = Math.max(0, loc.lineStart); ln <= Math.min(loc.lineEnd, lines.length - 1); ln++) {
-        if (isFollow(lines[ln])) { target = ln; break; }
+        if (isFollow(lines[ln])) { target = ln; via = 'range'; break; }
       }
     }
     if (target < 0 && loc.headingNo) {
       const h = lines.findIndex((l) => l.startsWith(`### ${loc.headingNo}.`));
       if (h >= 0) {
         for (let ln = h + 1; ln < lines.length && !lines[ln].startsWith('### ') && !lines[ln].startsWith('## '); ln++) {
-          if (isFollow(lines[ln])) { target = ln; break; }
+          if (isFollow(lines[ln])) { target = ln; via = 'heading'; break; }
         }
       }
     }
+    console.debug('[lexora] followmark target', { via, target, heading: loc.headingNo, range: [loc.lineStart, loc.lineEnd], quote: loc.quote?.slice(0, 30) });
     // 绝不退化为「全文第一条」——写错别人的句子比写不进更糟
     if (target < 0) {
       new Notice('没定位到这一句的跟读行，请切到编辑模式勾选（或滚动后重试）');
