@@ -359,14 +359,20 @@ def _run_transcribe(job: Job, media: Path, language: str) -> None:
                     str(media), language=language or None, vad_filter=True, beam_size=1,
                     # 新闻/播客常有片头音乐：不携带上文可避免幻觉循环，还略快
                     condition_on_previous_text=False,
+                    # 词级时间戳：分段级的 end 常吞掉最后一个词导致切片截早，
+                    # 用首词/末词的精确时间重写段边界（约慢 15%，换句界精准）
+                    word_timestamps=True,
                 )
                 total = max(1.0, getattr(info, "duration", 0.0) or 1.0)
                 lines = ["WEBVTT", ""]
                 for seg in segments:
-                    lines.append(f"{_fmt_ts(seg.start)} --> {_fmt_ts(seg.end)}")
+                    words = getattr(seg, "words", None) or []
+                    w_start = words[0].start if words else seg.start
+                    w_end = max(words[-1].end, words[-1].start + 0.12) if words else seg.end
+                    lines.append(f"{_fmt_ts(w_start)} --> {_fmt_ts(w_end)}")
                     lines.append(seg.text.strip())
                     lines.append("")
-                    job.progress = min(0.99, seg.end / total)
+                    job.progress = min(0.99, w_end / total)
                 out.write_text("\n".join(lines), encoding="utf-8")
         job.result_path = out
         job.progress = 1.0

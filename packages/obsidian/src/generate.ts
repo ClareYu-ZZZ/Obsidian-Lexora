@@ -83,8 +83,8 @@ async function makeClips(plugin: ElpPlugin, data: LessonData): Promise<void> {
     const seg = data.segments[h.segIdx];
     if (seg?.start === undefined || seg.end === undefined) return;
     const name = `hard${pad(i + 1)}`;
-    // 句切片：首尾各留 0.3s，起音收音完整
-    segs.push({ name, start: Math.max(0, seg.start - 0.3), end: seg.end + 0.3 });
+    // 句切片：起 0.3s / 收 0.45s 余量（Whisper 句尾普遍偏早，收音侧多留）
+    segs.push({ name, start: Math.max(0, seg.start - 0.3), end: seg.end + 0.45 });
     hardMap[h.segIdx] = `clips/${name}.mp3`;
   });
   const paraMap: Record<number, string> = {};
