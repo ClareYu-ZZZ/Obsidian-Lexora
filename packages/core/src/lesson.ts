@@ -239,7 +239,8 @@ export function lessonMarkdown(data: LessonData): string {
     L.push('');
     L.push('- **结构**：');
     L.push('- **翻译**：');
-    L.push('- **跟读**：[ ] 1 遍  [ ] 3 遍  [ ] 影子跟读');
+    // data-fid：这条跟读行的唯一身份（阅读模式不可见），打卡回写据此精确定位，免受任何渲染结构影响
+    L.push(`- **跟读**：[ ] 1 遍  [ ] 3 遍  [ ] 影子跟读<span data-fid="${i + 1}"></span>`);
     L.push('');
   });
 

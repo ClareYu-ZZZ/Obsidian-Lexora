@@ -101,6 +101,7 @@ export function registerPlayer(plugin: ElpPlugin): void {
           // 阅读模式每个块各包一层 wrapper，所以要逐级向上、在每一级扫前序兄弟找 `N.` 标题。
           const fresh = ctx.getSectionInfo(el);
           void toggleFollowMark(plugin, ctx.sourcePath, k, item, {
+            fid: node.querySelector('[data-fid]')?.getAttribute('data-fid') ?? null,
             lineStart: fresh?.lineStart ?? info?.lineStart,
             lineEnd: fresh?.lineEnd ?? info?.lineEnd,
             headingNo: findHeadingNo(node),
@@ -166,7 +167,7 @@ function normAnchor(t: string): string {
  *  定位：区块行号 → 所属长难句标题号（### N.）；都失败则放弃并提示，绝不写别的行。 */
 async function toggleFollowMark(
   plugin: ElpPlugin, sourcePath: string, k: number, item: HTMLElement,
-  loc: { lineStart?: number; lineEnd?: number; headingNo?: number | null; quote?: string | null },
+  loc: { fid?: string | null; lineStart?: number; lineEnd?: number; headingNo?: number | null; quote?: string | null },
 ): Promise<void> {
   const file = plugin.app.vault.getAbstractFileByPath(sourcePath);
   if (!(file instanceof TFile)) return;
@@ -176,6 +177,11 @@ async function toggleFollowMark(
     const isFollow = (l: string) => l.includes('跟读') && /\[( |x)\]/i.test(l);
     let target = -1;
     let via = '';
+    // ⓪ 行内身份标记（新模板）：两端精确值，永不歧义
+    if (loc.fid) {
+      target = lines.findIndex((l) => l.includes(`data-fid="${loc.fid}"`) && isFollow(l));
+      if (target >= 0) via = 'fid';
+    }
     // ① 原句引用文本（全文唯一）：定位引用行，向后找本块的跟读行
     if (loc.quote) {
       const key = normAnchor(loc.quote).slice(0, 32);
