@@ -193,8 +193,8 @@ export class FeedsPanel {
       if (item.videoId) meta.createSpan({ cls: 'elp-tag', text: '视频' });
       else if (item.bvid) meta.createSpan({ cls: 'elp-tag', text: '视频' });
       else if (item.audioUrl) meta.createSpan({ cls: 'elp-tag', text: '音频' });
-      if (item.published) meta.createSpan({ text: item.published.slice(0, 10) });
-      else if (item.publishedText) meta.createSpan({ text: item.publishedText });
+      const when = item.published ? item.published.slice(0, 10) : (item.publishedText ?? '');
+      meta.createSpan({ cls: 'elp-card-src', text: [feed.name, when].filter(Boolean).join(' · ') });
       const existing = this.plugin.feeds.lessonFor(item.id);
       if (existing) meta.createSpan({ cls: 'elp-tag is-done', text: '已生成' });
 
@@ -211,7 +211,7 @@ export class FeedsPanel {
     parent: HTMLElement, feed: FeedConfig, item: FeedItem, existing: string | undefined,
   ): void {
     if (existing) {
-      const open = parent.createEl('button', { cls: 'elp-books-tab', text: '打开教程' });
+      const open = parent.createEl('button', { cls: 'elp-card-open', text: '打开笔记' });
       open.onclick = (e) => {
         e.stopPropagation();
         const f = this.app.vault.getAbstractFileByPath(existing);
@@ -231,6 +231,12 @@ export class FeedsPanel {
       busy.createDiv({ cls: 'elp-gen-busy-bar' }).createDiv({ cls: 'elp-gen-busy-fill' });
     } else {
       const gen = parent.createEl('button', { cls: 'mod-cta elp-gen-btn', text: '生成教程' });
+      if (item.link) {
+        const ext = parent.createEl('button', { cls: 'elp-card-ext', attr: { 'aria-label': '打开原文' } });
+        setIcon(ext.createSpan(), 'external-link');
+        ext.onclick = (e) => { e.stopPropagation(); window.open(item.link, '_blank'); };
+        parent.insertBefore(gen, ext);
+      }
       gen.onclick = (e) => {
         e.stopPropagation();
         this.generating.add(item.id);

@@ -1942,3 +1942,58 @@ body.elp-style-background .elp-word {
 .elp-ts-scrollbox .elp-ts-sent.is-current { box-shadow: none; }
 /* 走带整体居中但自身占满行 */
 .elp-pane-inner .elp-pane-transport { width: 100%; justify-content: center; }
+
+
+/* ================================================================
+   0.30.3 订阅中心像素对齐设计板 ④
+   ================================================================ */
+/* 筛选 chips：小胶囊；选中=浅底+主题色文字（不再是大绿块） */
+.elp-feeds-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.elp-feeds-bar .elp-books-tab {
+  padding: 6px 13px; border-radius: 999px; font-size: 12px;
+  background: transparent; border: none; color: var(--text-muted);
+  box-shadow: none !important;
+}
+.elp-feeds-bar .elp-books-tab:hover { background: var(--background-modifier-hover); }
+.elp-feeds-bar .elp-books-tab.is-active {
+  background: var(--background-secondary);
+  color: var(--interactive-accent);
+  font-weight: 600;
+}
+.elp-feeds-bar .elp-books-add, .elp-feeds-bar .elp-icon-btn {
+  width: 30px; height: 30px; border-radius: 8px; padding: 0;
+  background: transparent; border: 1px solid var(--background-modifier-border);
+  box-shadow: none !important; color: var(--text-muted);
+  display: inline-flex; align-items: center; justify-content: center;
+}
+
+/* 卡片：secondary 面板底、13px 标题、紧凑 meta */
+.elp-feeds .elp-card { background: var(--background-secondary); }
+.elp-feeds .elp-card-cover { aspect-ratio: 16 / 9; height: auto; }
+.elp-feeds .elp-card-body { padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; flex: 1; }
+.elp-feeds .elp-card-title { font-size: 13px; font-weight: 600; line-height: 1.45; }
+.elp-feeds .elp-card-meta {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  font-size: 11px; color: var(--text-muted);
+}
+.elp-feeds .elp-card-src { font-size: 11px; color: var(--text-muted); }
+.elp-feeds .elp-card-actions { margin-top: auto; display: flex; gap: 8px; }
+.elp-feeds .elp-card-actions .elp-gen-btn {
+  flex: 1; font-size: 12px; font-weight: 700; padding: 8px 0; border-radius: 8px;
+  background: var(--interactive-accent); color: var(--text-on-accent); border: none;
+}
+.elp-feeds .elp-card-actions .elp-card-open {
+  flex: 1; font-size: 12px; font-weight: 600; padding: 8px 0; border-radius: 8px;
+  background: transparent; border: 1px solid var(--background-modifier-border);
+  color: var(--interactive-accent); box-shadow: none; cursor: pointer;
+}
+.elp-feeds .elp-card-actions .elp-card-ext,
+.elp-feeds .elp-card-actions .elp-row-del {
+  width: 34px; border-radius: 8px; padding: 0; flex-shrink: 0;
+  background: transparent; border: 1px solid var(--background-modifier-border);
+  box-shadow: none !important; color: var(--text-muted); cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.elp-feeds .elp-card-actions .elp-card-ext svg,
+.elp-feeds .elp-card-actions .elp-row-del svg { width: 13px; height: 13px; }
+.elp-feeds .elp-tag { font-size: 10px; padding: 2px 8px; border-radius: 999px; }
