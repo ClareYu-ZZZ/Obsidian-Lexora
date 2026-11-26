@@ -34,7 +34,10 @@ from typing import Optional
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 
-API_VERSION = "1.5"
+# 真实发布版本（与 services/worker/VERSION 同步；healthz/管理台展示用）
+WORKER_VERSION = "1.7.1"
+# 线协议版本（插件能力协商用，协议不破坏兼容就不动）
+API_VERSION = "1.7"
 FAKE = os.environ.get("LEXORA_FAKE") == "1"
 WHISPER_MODEL = os.environ.get("LEXORA_WHISPER_MODEL", "small")
 PIPER_VOICE = os.environ.get("LEXORA_PIPER_VOICE", "en_US-ryan-high")
@@ -868,7 +871,7 @@ def require_admin(request: Request) -> None:
 
 @app.get("/healthz")
 def healthz() -> JSONResponse:
-    return JSONResponse({"apiVersion": API_VERSION, "model": WHISPER_MODEL})
+    return JSONResponse({"version": WORKER_VERSION, "apiVersion": API_VERSION, "model": WHISPER_MODEL})
 
 
 @app.post("/admin/login")
