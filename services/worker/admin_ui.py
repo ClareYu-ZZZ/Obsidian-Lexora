@@ -45,7 +45,7 @@ footer a:hover{color:#E7EDF4}
 </footer>
 <script>
 document.getElementById('host').textContent=location.host;
-fetch('/healthz').then(r=>r.json()).then(d=>{document.getElementById('st').textContent='服务正常 · v'+d.apiVersion+' · whisper '+d.model}).catch(()=>{});
+fetch('/healthz').then(r=>r.json()).then(d=>{document.getElementById('st').textContent='服务正常 · v'+(d.version||d.apiVersion)+' · whisper '+d.model}).catch(()=>{});
 document.getElementById('f').addEventListener('submit',async(e)=>{
   e.preventDefault();
   const err=document.getElementById('err');err.style.display='none';
@@ -262,7 +262,7 @@ async function loadStats(){
   const d=await j('/admin/api/stats');
   const up=Math.floor(d.uptime_s/3600)+'h'+Math.floor(d.uptime_s%3600/60)+'m';
   $('hostline').textContent=location.host+' · 在线';
-  $('metaline').textContent=`v${d.apiVersion} · whisper ${d.whisper.model}×${d.whisper.threads}线程 · 运行 ${up}`;
+  $('metaline').textContent=`v${d.version||d.apiVersion} · whisper ${d.whisper.model}×${d.whisper.threads}线程 · 运行 ${up}`;
   const s=d.system.now||{};
   renderIssue(d);
   const todayJobs=Object.values(d.jobs.kinds).reduce((n,k)=>n+k.today,0);

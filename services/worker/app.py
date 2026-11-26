@@ -572,6 +572,7 @@ def capabilities(caller: str = Depends(require_auth)) -> JSONResponse:
             has_whisper = False
     return JSONResponse({
         "apiVersion": API_VERSION,
+        "version": WORKER_VERSION,
         "name": "elp-worker",
         "features": {
             "transcribe": has_whisper,
