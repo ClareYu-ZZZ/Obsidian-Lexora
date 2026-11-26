@@ -308,6 +308,44 @@ export class PlayerController {
     this.rootEl = root;
     this.backend = this.buildMedia(root);
     this.buildControls(root);
+    void this.buildCheckin(root);
+  }
+
+  /** 面板底部：本课跟读打卡 x/y + 迷你进度环 + 去打卡（打开笔记）。 */
+  private async buildCheckin(root: HTMLElement): Promise<void> {
+    const row = root.createDiv({ cls: 'elp-checkin' });
+    const ring = row.createDiv({ cls: 'elp-checkin-ring' });
+    const ringIn = ring.createDiv({ cls: 'elp-checkin-ring-in' });
+    const mid = row.createDiv({ cls: 'elp-checkin-mid' });
+    const line1 = mid.createDiv({ cls: 'elp-checkin-title' });
+    mid.createDiv({ cls: 'elp-checkin-sub', text: '勾选正文里的跟读项即计入' });
+    const go = row.createEl('button', { cls: 'elp-checkin-go', text: '去打卡 →' });
+    go.onclick = () => {
+      const f = this.plugin.app.vault.getAbstractFileByPath(this.mdPath);
+      if (f instanceof TFile) void this.plugin.app.workspace.getLeaf(false).openFile(f, { state: { mode: 'preview' } });
+    };
+    const refresh = async (): Promise<void> => {
+      if (!row.isConnected && ringIn.textContent) return;
+      const f = this.plugin.app.vault.getAbstractFileByPath(this.mdPath);
+      if (!(f instanceof TFile)) { row.hide(); return; }
+      const text = await this.plugin.app.vault.cachedRead(f);
+      let checked = 0; let total = 0;
+      for (const line of text.split('\n')) {
+        if (!line.includes('跟读')) continue;
+        checked += (line.match(/\[x\]/gi) ?? []).length;
+        total += (line.match(/\[[ x]\]/gi) ?? []).length;
+      }
+      if (!total) { row.hide(); return; }
+      row.show();
+      const pct = Math.round((checked / total) * 100);
+      ring.style.setProperty('--elp-ring-pct', String(pct));
+      ringIn.setText(`${pct}%`);
+      line1.setText(`本课跟读打卡 ${checked} / ${total}`);
+    };
+    await refresh();
+    this.plugin.registerEvent(this.plugin.app.vault.on('modify', (f) => {
+      if (f.path === this.mdPath && row.isConnected) void refresh();
+    }));
   }
 
   private get lessonDir(): string {
@@ -639,7 +677,23 @@ export class PlayerController {
     this.mineBtn.toggleClass('is-hidden', !has);
   }
 
+  private progressSaveTimer: number | null = null;
+
+  /** 记录「学到第几句」，3 秒节流落盘；学习笔记页的「继续上次」据此恢复。 */
+  private recordProgress(): void {
+    if (this.current < 0) return;
+    const lp = (this.plugin.settings.lessonProgress ??= {});
+    lp[this.mdPath] = { idx: this.current, total: this.data.segments.length, at: Date.now() };
+    const keys = Object.keys(lp);
+    if (keys.length > 100) {
+      keys.sort((a, b) => lp[a].at - lp[b].at).slice(0, keys.length - 100).forEach((k) => delete lp[k]);
+    }
+    if (this.progressSaveTimer) window.clearTimeout(this.progressSaveTimer);
+    this.progressSaveTimer = window.setTimeout(() => void this.plugin.saveSettings(), 3000);
+  }
+
   private updateSentence(): void {
+    this.recordProgress();
     if (this.transcriptEl) {
       this.transcriptEl.querySelectorAll('.elp-ts-sent').forEach((n) => {
         if (!(n instanceof HTMLElement)) return;

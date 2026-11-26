@@ -64,6 +64,8 @@ export interface ElpSettings {
   youtubeCookie?: string;
   /** 官方推荐源缓存（控制台维护，7 天有效）。 */
   officialFeedsCache?: { at: number; feeds: Array<{ name: string; url: string; hint: string; region?: 'cn' | 'global' }> };
+  /** 每篇教程最近学习位置（notePath → 句序/总句数/时间戳），上限 100 条按时间淘汰。 */
+  lessonProgress?: Record<string, { idx: number; total: number; at: number }>;
   lastUpdateCheckAt?: number;
   lastPingAt?: number;
   lastNotifiedVersion?: string;

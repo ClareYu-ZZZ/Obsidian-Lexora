@@ -1,5 +1,6 @@
 import { App, TFile, normalizePath } from 'obsidian';
 import type { LessonData } from '@elp/core';
+import { openPlayerPane } from './player-pane';
 import type ElpPlugin from './main';
 import { ConfirmModal, iconButton } from './ui';
 import { deleteLesson } from './generate';
@@ -24,6 +25,7 @@ export class NotesPanel {
   private rows: NoteRow[] = [];
 
   private refreshTimer: number | null = null;
+  private sortMode: 'recent' | 'progress' | 'created' = 'recent';
 
   constructor(private plugin: ElpPlugin, private app: App) {
     // 跟读勾选等改动落盘后 800ms 自动重扫，仪表盘实时反映进度
@@ -110,8 +112,55 @@ export class NotesPanel {
     }
 
     // ---- 列表 ----
+    // ---- 继续上次学习 ----
+    const lp = this.plugin.settings.lessonProgress ?? {};
+    const lastPath = Object.keys(lp)
+      .filter((k) => this.rows.some((r) => r.notePath === k))
+      .sort((a, b) => lp[b].at - lp[a].at)[0];
+    if (lastPath) {
+      const row = this.rows.find((r) => r.notePath === lastPath);
+      const rec = lp[lastPath];
+      if (row && rec && rec.idx + 1 < rec.total) {
+        const hero = root.createDiv({ cls: 'elp-continue' });
+        const pct = Math.round(((rec.idx + 1) / rec.total) * 100);
+        const ring = hero.createDiv({ cls: 'elp-continue-ring' });
+        ring.style.setProperty('--elp-ring-pct', String(pct));
+        ring.createDiv({ cls: 'elp-continue-ring-in', text: `${pct}%` });
+        const mid = hero.createDiv({ cls: 'elp-continue-mid' });
+        mid.createDiv({ cls: 'elp-continue-label', text: '继续上次学习' });
+        mid.createDiv({ cls: 'elp-continue-title', text: row.data.title });
+        mid.createDiv({ cls: 'elp-continue-meta', text: `学到第 ${rec.idx + 1} 句 / 共 ${rec.total} 句 · ${relTime(rec.at)}` });
+        const go = hero.createEl('button', { cls: 'elp-continue-btn', text: '▶ 继续' });
+        go.onclick = () => void this.continueLesson(row, rec.idx);
+      }
+    }
+
+    // ---- 排序 ----
+    const sortBar = root.createDiv({ cls: 'elp-notes-sort' });
+    const sorts: Array<{ id: 'recent' | 'progress' | 'created'; label: string }> = [
+      { id: 'recent', label: '最近学习' },
+      { id: 'progress', label: '完成度低' },
+      { id: 'created', label: '创建时间' },
+    ];
+    sortBar.createSpan({ cls: 'elp-notes-sort-label', text: '排序' });
+    for (const so of sorts) {
+      const b = sortBar.createEl('button', {
+        cls: 'elp-sort-chip' + (this.sortMode === so.id ? ' is-active' : ''), text: so.label,
+      });
+      b.onclick = () => { this.sortMode = so.id; this.render(); };
+    }
+    const sorted = [...this.rows].sort((a, b) => {
+      if (this.sortMode === 'recent') return (lp[b.notePath]?.at ?? 0) - (lp[a.notePath]?.at ?? 0);
+      if (this.sortMode === 'progress') {
+        const pa = a.totalBoxes ? a.checked / a.totalBoxes : 0;
+        const pb = b.totalBoxes ? b.checked / b.totalBoxes : 0;
+        return pa - pb;
+      }
+      return (b.data.createdAt ?? '').localeCompare(a.data.createdAt ?? '');
+    });
+
     const list = root.createDiv({ cls: 'elp-notes-list' });
-    for (const row of this.rows) {
+    for (const row of sorted) {
       const item = list.createDiv({ cls: 'elp-note-item' });
       item.onclick = () => {
         const f = this.app.vault.getAbstractFileByPath(row.notePath);
@@ -126,6 +175,8 @@ export class NotesPanel {
       meta.createSpan({ text: row.data.createdAt.slice(0, 10) });
       meta.createSpan({ text: `生词 ${row.data.words.length}` });
       meta.createSpan({ text: `长难句 ${row.data.hard.length}` });
+      const rp = (this.plugin.settings.lessonProgress ?? {})[row.notePath];
+      if (rp && rp.idx + 1 < rp.total) meta.createSpan({ cls: 'elp-note-resume', text: `上次学到第 ${rp.idx + 1} 句` });
 
       const prog = item.createDiv({ cls: 'elp-note-progress' });
       const pct = row.totalBoxes ? Math.round((row.checked / row.totalBoxes) * 100) : 0;
@@ -133,6 +184,13 @@ export class NotesPanel {
       const bar = barWrap.createDiv({ cls: 'elp-vocab-bar-fill' + (pct >= 100 ? ' is-done' : '') });
       bar.style.width = `${pct}%`;
       prog.createSpan({ cls: 'elp-note-pct', text: `跟读 ${pct}%` });
+      {
+        const rp2 = (this.plugin.settings.lessonProgress ?? {})[row.notePath];
+        if (rp2 && rp2.idx + 1 < rp2.total) {
+          const cont = prog.createEl('button', { cls: 'elp-note-continue', text: '继续' });
+          cont.onclick = (e) => { e.stopPropagation(); void this.continueLesson(row, rp2.idx); };
+        }
+      }
       iconButton(prog, 'trash-2', '删除这篇教程（含切片与录音）', () =>
         new ConfirmModal(
           this.app, '删除教程',
@@ -142,4 +200,21 @@ export class NotesPanel {
         ).open(), 'elp-row-del');
     }
   }
+  /** 打开笔记并让右侧播放器跳到上次句子。 */
+  private async continueLesson(row: NoteRow, idx: number): Promise<void> {
+    const f = this.app.vault.getAbstractFileByPath(row.notePath);
+    if (f instanceof TFile) await this.app.workspace.getLeaf(true).openFile(f, { state: { mode: 'preview' } });
+    const pane = await openPlayerPane(this.plugin);
+    pane?.showLesson(row.notePath, row.data, idx);
+  }
+
+}
+
+/** 粗粒度相对时间：刚刚/N 分钟前/N 小时前/N 天前。 */
+function relTime(at: number): string {
+  const d = Date.now() - at;
+  if (d < 60_000) return '刚刚';
+  if (d < 3600_000) return `${Math.floor(d / 60_000)} 分钟前`;
+  if (d < 86_400_000) return `${Math.floor(d / 3600_000)} 小时前`;
+  return `${Math.floor(d / 86_400_000)} 天前`;
 }
