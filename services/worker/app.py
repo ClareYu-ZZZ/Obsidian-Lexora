@@ -41,6 +41,9 @@ PIPER_VOICE = os.environ.get("LEXORA_PIPER_VOICE", "en_US-ryan-high")
 PIPER_DIR = Path(os.environ.get("LEXORA_PIPER_DIR", "/voices"))
 WHISPER_COMPUTE = os.environ.get("LEXORA_WHISPER_COMPUTE", "int8")
 WHISPER_THREADS = int(os.environ.get("LEXORA_WHISPER_THREADS", "4"))
+# 同时运行的转写数上限（小机型并发只会互相拖慢 + 内存吃紧；排队的任务显示 queued）
+MAX_TRANSCRIBE = int(os.environ.get("LEXORA_MAX_TRANSCRIBE", "1"))
+_TRANSCRIBE_SEM = threading.Semaphore(MAX_TRANSCRIBE)
 TOKEN = os.environ.get("LEXORA_TOKEN") or secrets.token_urlsafe(24)
 if not os.environ.get("LEXORA_TOKEN"):
     print(f"[elp-worker] generated token (set LEXORA_TOKEN to pin it): {TOKEN}", flush=True)
@@ -343,24 +346,28 @@ Replace it by running without LEXORA_FAKE.
 
 def _run_transcribe(job: Job, media: Path, language: str) -> None:
     try:
-        job.status = "running"
-        out = WORK_DIR / f"{job.id}.vtt"
-        if FAKE:
-            time.sleep(0.2)
-            out.write_text(FAKE_VTT, encoding="utf-8")
-        else:
-            model = _get_whisper()
-            segments, info = model.transcribe(
-                str(media), language=language or None, vad_filter=True, beam_size=1,
-            )
-            total = max(1.0, getattr(info, "duration", 0.0) or 1.0)
-            lines = ["WEBVTT", ""]
-            for seg in segments:
-                lines.append(f"{_fmt_ts(seg.start)} --> {_fmt_ts(seg.end)}")
-                lines.append(seg.text.strip())
-                lines.append("")
-                job.progress = min(0.99, seg.end / total)
-            out.write_text("\n".join(lines), encoding="utf-8")
+        job.status = "queued"
+        with _TRANSCRIBE_SEM:
+            job.status = "running"
+            out = WORK_DIR / f"{job.id}.vtt"
+            if FAKE:
+                time.sleep(0.2)
+                out.write_text(FAKE_VTT, encoding="utf-8")
+            else:
+                model = _get_whisper()
+                segments, info = model.transcribe(
+                    str(media), language=language or None, vad_filter=True, beam_size=1,
+                    # 新闻/播客常有片头音乐：不携带上文可避免幻觉循环，还略快
+                    condition_on_previous_text=False,
+                )
+                total = max(1.0, getattr(info, "duration", 0.0) or 1.0)
+                lines = ["WEBVTT", ""]
+                for seg in segments:
+                    lines.append(f"{_fmt_ts(seg.start)} --> {_fmt_ts(seg.end)}")
+                    lines.append(seg.text.strip())
+                    lines.append("")
+                    job.progress = min(0.99, seg.end / total)
+                out.write_text("\n".join(lines), encoding="utf-8")
         job.result_path = out
         job.progress = 1.0
         job.status = "done"

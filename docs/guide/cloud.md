@@ -77,6 +77,10 @@ environment:
   - LEXORA_ACCEPT_LICENSE_KEYS=1   # 托管模式：验用户的 Pro license key
   - LEXORA_PAIRING_WINDOW=0        # 公网必关配对
   - LEXORA_WHISPER_THREADS=8       # = vCPU
+  # 2c4G 轻量机型推荐（英文内容为主）：distil 蒸馏模型 ≈ 2 倍速、精度几乎不降
+  # - LEXORA_WHISPER_MODEL=distil-small.en   # 仅英文！中文媒体转写请保持 small
+  # - LEXORA_WHISPER_THREADS=2
+  # - LEXORA_MAX_TRANSCRIBE=1        # 转写互斥（默认 1），排队任务状态为 queued
   # - LEXORA_LICENSED_DAILY_JOBS=10
   # - LEXORA_REVOKED=refund@user.com   # 吊销名单
 cpus: 8
