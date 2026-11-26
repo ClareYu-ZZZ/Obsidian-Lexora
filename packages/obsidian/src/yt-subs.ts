@@ -39,8 +39,8 @@ async function fromWatchPage(plugin: ElpPlugin, videoId: string): Promise<string
     const sep = best.baseUrl.includes('?') ? '&' : '?';
     const sub = await ytGet(plugin, `${best.baseUrl}${sep}fmt=vtt`);
     console.debug('[lexora] timedtext:', sub.status, sub.text?.length ?? 0);
-    if (sub.status >= 400 || !sub.text?.includes('WEBVTT')) return null;
-    return sub.text;
+    if (sub.status >= 400) return null;
+    return anyToVtt(sub.text);
   } catch (e) {
     console.debug('[lexora] watch page error', e);
     return null;
@@ -48,6 +48,52 @@ async function fromWatchPage(plugin: ElpPlugin, videoId: string): Promise<string
 }
 
 /** 路线 1.5：Innertube ANDROID 客户端——其字幕直链不吃 pot 校验（yt-dlp 同款）。 */
+/** 把 YouTube 各种字幕格式统一转成 VTT：已是 WEBVTT 原样返回；
+ *  srv3 XML（<timedtext>…<p t= d=>）、经典 XML（<transcript><text start= dur=>）、
+ *  JSON3（{wireMagic:"pb3", events:[…]}）都转换；识别不了返回 null。 */
+function anyToVtt(text: string | undefined): string | null {
+  if (!text) return null;
+  const t = text.trim();
+  if (t.includes('WEBVTT')) return text;
+  const ts = (ms: number): string => {
+    const x = Math.max(0, Math.round(ms));
+    const h = Math.floor(x / 3600_000); const m = Math.floor((x % 3600_000) / 60_000);
+    const sec = Math.floor((x % 60_000) / 1000); const mm = x % 1000;
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}.${String(mm).padStart(3, '0')}`;
+  };
+  const cues: Array<{ s: number; e: number; text: string }> = [];
+  if (t.startsWith('{')) {
+    try {
+      const j = JSON.parse(t) as { events?: Array<{ tStartMs?: number; dDurationMs?: number; segs?: Array<{ utf8?: string }> }> };
+      for (const ev of j.events ?? []) {
+        const txt = (ev.segs ?? []).map((g) => g.utf8 ?? '').join('').replace(/\n/g, ' ').trim();
+        if (!txt || ev.tStartMs === undefined) continue;
+        cues.push({ s: ev.tStartMs, e: ev.tStartMs + (ev.dDurationMs ?? 2000), text: txt });
+      }
+    } catch { return null; }
+  } else if (t.includes('<timedtext') || t.includes('<transcript')) {
+    const doc = new DOMParser().parseFromString(t, 'text/xml');
+    const ps = doc.querySelectorAll('p');
+    if (ps.length) {
+      ps.forEach((el) => {
+        const txt = (el.textContent ?? '').replace(/\n/g, ' ').trim();
+        const st = Number(el.getAttribute('t') ?? 'NaN');
+        if (!txt || Number.isNaN(st)) return;
+        cues.push({ s: st, e: st + Number(el.getAttribute('d') ?? '2000'), text: txt });
+      });
+    } else {
+      doc.querySelectorAll('text').forEach((el) => {
+        const txt = (el.textContent ?? '').replace(/\n/g, ' ').trim();
+        const st = parseFloat(el.getAttribute('start') ?? 'NaN');
+        if (!txt || Number.isNaN(st)) return;
+        cues.push({ s: st * 1000, e: (st + parseFloat(el.getAttribute('dur') ?? '2')) * 1000, text: txt });
+      });
+    }
+  } else return null;
+  if (cues.length < 3) return null;
+  return 'WEBVTT\n\n' + cues.map((c) => `${ts(c.s)} --> ${ts(c.e)}\n${c.text}`).join('\n\n') + '\n';
+}
+
 /** 路线 1.2：youtubei/v1/get_transcript——网页「显示转写」面板同款接口，
  *  不经 timedtext、不吃 pot 校验。返回逐段时间戳+文本，这里自行合成 VTT。 */
 async function fromTranscriptApi(plugin: ElpPlugin, videoId: string): Promise<string | null> {
@@ -112,7 +158,7 @@ async function fromPiped(plugin: ElpPlugin, videoId: string): Promise<string | n
       if (!best?.url) continue;
       const sub = await ytGet(plugin, best.url);
       console.debug('[lexora] piped vtt', sub.status, sub.text?.length ?? 0);
-      if (sub.status < 400 && sub.text?.includes('WEBVTT')) return sub.text;
+      if (sub.status < 400) { const v = anyToVtt(sub.text); if (v) return v; }
     } catch (e) {
       console.debug('[lexora] piped error', base, e);
     }
@@ -165,7 +211,11 @@ async function fromInnertube(plugin: ElpPlugin, videoId: string): Promise<string
       const sep = best.baseUrl.includes('?') ? '&' : '?';
       const sub = await ytGet(plugin, `${best.baseUrl}${sep}fmt=vtt`);
       console.debug(`[lexora] innertube ${c.name} timedtext:`, sub.status, sub.text?.length ?? 0);
-      if (sub.status < 400 && sub.text?.includes('WEBVTT')) return sub.text;
+      if (sub.status < 400) {
+        const v = anyToVtt(sub.text);
+        if (v) return v;
+        console.debug(`[lexora] innertube ${c.name} 未识别的字幕格式:`, sub.text?.slice(0, 80));
+      }
     } catch (e) {
       console.debug(`[lexora] innertube ${c.name} error`, e);
     }
@@ -200,7 +250,7 @@ async function fromInvidious(plugin: ElpPlugin, videoId: string): Promise<string
           try {
             const sub = await ytGet(plugin, url);
             console.debug('[lexora] invidious vtt', url.slice(0, 80), sub.status, sub.text?.length ?? 0);
-            if (sub.status < 400 && sub.text?.includes('WEBVTT')) return sub.text;
+            if (sub.status < 400) { const v = anyToVtt(sub.text); if (v) return v; }
           } catch (e) {
             console.debug('[lexora] invidious vtt error', url.slice(0, 80), e);
           }
