@@ -33,7 +33,7 @@ export async function refreshRecommended(plugin: ElpPlugin): Promise<boolean> {
   try {
     const res = await requestUrl({ url: `${OFFICIAL_BASE}/v1/recommended-feeds`, throw: false });
     const feeds = res.status === 200 ? res.json?.feeds : null;
-    if (!Array.isArray(feeds) || feeds.length === 0) return;
+    if (!Array.isArray(feeds) || feeds.length === 0) return false;
     const TYPE_HINT: Record<string, string> = { bilibili: 'B站', rss: '播客', article: '文章', youtube: 'YouTube' };
     plugin.settings.officialFeedsCache = {
       at: Date.now(),
