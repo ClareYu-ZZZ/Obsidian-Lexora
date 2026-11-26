@@ -177,7 +177,7 @@ export async function renderLibrarySection(
         gen.onclick = async (e) => {
           e.stopPropagation();
           if (!col.freeGen && !plugin.license.pro) {
-            new Notice('该精选课需 Lexora Pro 解锁生成（试听免费）。设置中输入 license key，或先体验 14 天试用。', 8000);
+            new Notice('该精选课需 Lexora Pro 解锁生成（试听免费）。设置中输入 license key，或先体验 3 天试用。', 8000);
             return;
           }
           if (!ep.subtitle) { new Notice('该集缺少字幕文件，暂不能生成'); return; }
